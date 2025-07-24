@@ -1,9 +1,5 @@
 from colorama import Fore
 
-from first_project.fibo_calculate import fibonacci_retracement
-
-
-
 
 def get_swing_points(data, legs):
     if len(legs) == 3:

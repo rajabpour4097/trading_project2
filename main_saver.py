@@ -1,15 +1,14 @@
-from first_project.fibo_calculate import fibonacci_retracement
-from filter_data import filter_data
-from first_project.get_legs import get_legs
-from initial_works import initial_swing_search
 import numpy as np
 import pandas as pd
-from first_project.swing import get_swing_points
-from twelvedata import TDClient
 from time import sleep
-from get_data import get_live_data
-import logging
 from colorama import init, Fore
+
+from fibo_calculate import fibonacci_retracement
+from get_data_multiip import get_live_data
+from get_legs import get_legs
+from swing import get_swing_points
+
+
 
 # راه‌اندازی colorama
 init(autoreset=True)
@@ -43,7 +42,6 @@ true_position = False
 last_touched_705_point_up = None
 last_touched_705_point_down = None
 
-filter_data()
 
 cache_data = pd.read_csv("eurusd_prices_filtered.csv", parse_dates=["timestamp"], index_col="timestamp")
 last_data = cache_data.iloc[-1]
@@ -52,7 +50,6 @@ i = 1
 
 while True:
     try:
-        filter_data()
 
         cache_data = pd.read_csv("eurusd_prices_filtered.csv", parse_dates=["timestamp"], index_col="timestamp")
         cache_data['status'] = np.where(cache_data['open'] > cache_data['close'], 'bearish', 'bullish')

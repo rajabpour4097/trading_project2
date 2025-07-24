@@ -1,11 +1,11 @@
-from first_project.fibo_calculate import fibonacci_retracement
-from first_project.get_legs import get_legs
+from fibo_calculate import fibonacci_retracement
 import numpy as np
 import pandas as pd
-from first_project.swing import get_swing_points
 from time import sleep
-from first_project.get_data_multiip import get_live_data
 from colorama import init, Fore
+from get_data_multiip import get_live_data
+from get_legs import get_legs
+from swing import get_swing_points
 
 # راه‌اندازی colorama
 init(autoreset=True)
@@ -40,14 +40,14 @@ last_touched_705_point_up = None
 last_touched_705_point_down = None
 
 
-cache_data = pd.read_csv("eurusd_prices_multiip.csv", parse_dates=["timestamp"], index_col="timestamp")
+cache_data = pd.read_csv("../eurusd_prices_multiip.csv", parse_dates=["timestamp"], index_col="timestamp")
 last_data = cache_data.iloc[-1]
 start_index = 0
 i = 1
 print("App started.....")
 while True:
     try:
-        cache_data = pd.read_csv("eurusd_prices_multiip.csv", parse_dates=["timestamp"], index_col="timestamp")
+        cache_data = pd.read_csv("../eurusd_prices_multiip.csv", parse_dates=["timestamp"], index_col="timestamp")
         cache_data['status'] = np.where(cache_data['open'] > cache_data['close'], 'bearish', 'bullish')
 
         if cache_data.iloc[-1].name != last_data.name:
