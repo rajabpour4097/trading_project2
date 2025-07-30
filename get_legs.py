@@ -3,7 +3,7 @@
 def get_legs(data):
     print('len(data): ', len(data))
     legs = []
-    threshold = 5
+    threshold = 6
     start_index = data.index[0]
     j = 0
     last_start_price = None

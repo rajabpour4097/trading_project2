@@ -22,6 +22,7 @@ state.reset()
 cache_data = pd.read_csv("../eurusd_prices_multiip.csv", parse_dates=["timestamp"], index_col="timestamp")
 last_data = cache_data.iloc[-1]
 start_index = 0
+win_ratio = 1.2
 i = 1
 f = 1
 print("App started.....")
@@ -229,7 +230,7 @@ while True:
                     stop = state.fib_levels['0.9']
                     log(f'stop = fib_levels[0.9] {stop}', color='red')
                 stop_distance = abs(current_open_point - stop)
-                reward_end = current_open_point + (stop_distance * 2)
+                reward_end = current_open_point + (stop_distance * win_ratio)
                 log(f'stop = {stop}', color='green')
                 log(f'reward_end = {reward_end}', color='green')
                 log(f'live_data: {live_data}', color='green')
@@ -273,7 +274,7 @@ while True:
                     log(f'stop = fib_levels[0.9] {stop}', color='red')
                     
                 stop_distance = abs(current_open_point - stop)
-                reward_end = current_open_point - (stop_distance * 2)
+                reward_end = current_open_point - (stop_distance * win_ratio)
                 log(f'stop = {stop}', color='red')
                 log(f'reward_end = {reward_end}', color='red')
                 log(f'live_data: {live_data}', color='red')

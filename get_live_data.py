@@ -22,7 +22,7 @@ SOURCE_IPS = [
     "49.12.112.219"
 ]
 
-API_KEY = "TpK1MCCPUGxMc8bBFizt"  # Tradermade API key
+API_KEY = "AEiGyrU2Mo5hbKEuxOOm"  # Tradermade API key
 SYMBOL = "EURUSD"
 tehran_tz = pytz.timezone('Asia/Tehran')
 current_ip_index = 0
