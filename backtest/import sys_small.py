@@ -180,13 +180,13 @@ class QuickParameterOptimizer:
             return []
         
         # پارامترهای بهتر و کامل‌تر
-        thresholds = [4, 5, 6, 7, 8, 9]  # 6 values
-        fib_705_levels = [0.5, 0.618, 0.705, 0.786]  # 4 values - classical fib levels
-        fib_90_levels = [0.85, 0.9, 0.95]  # 3 values
-        risk_rewards = [1.0, 1.5, 2.0, 2.5, 3.0]  # 5 values
-        window_sizes = [30, 50, 70, 100]  # 4 values
-        min_swing_sizes = [3, 4, 5, 6]  # 4 values
-        lookback_periods = [15, 20, 30]  # 3 values - how far to look ahead
+        thresholds = [6]  # 6 values
+        fib_705_levels = [0.705]  # 4 values - classical fib levels
+        fib_90_levels = [0.9]  # 3 values
+        risk_rewards = [1.2]  # 5 values
+        window_sizes = [100]  # 4 values
+        min_swing_sizes = [6]  # 4 values
+        lookback_periods = [20]  # 3 values - how far to look ahead
         
         # Total combinations: 6×4×3×5×4×4×3 = 8,640 combinations
         

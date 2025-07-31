@@ -1,9 +1,10 @@
+from metatrader5_config import TRADING_CONFIG
 
-
-def get_legs(data):
+def get_legs(data, custom_threshold=None):
+    threshold = custom_threshold if custom_threshold else TRADING_CONFIG['threshold']
+    print(f'Using threshold: {threshold}')
     print('len(data): ', len(data))
     legs = []
-    threshold = 6
     start_index = data.index[0]
     j = 0
     last_start_price = None
@@ -125,4 +126,3 @@ def custom_price_diff(data, j, current_price=0, legs=[]):
     else:
         price_diff = abs(current_price - row['low']) * 10000
         return price_diff
-    
