@@ -7,3 +7,5 @@ env/
 *.pyo
 
 __pycache__/
+
+swing_logs.txt
