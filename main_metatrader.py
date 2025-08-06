@@ -206,25 +206,63 @@ def main():
                             
                             # اگر swing معکوس است، فقط در صورت عبور از fib 1.0 ریست کنیم
                             if last_swing_type == 'bullish' and swing_type == 'bearish':
-                                if cache_data.iloc[-1]['high'] > state.fib_levels['1.0']:
+                                if cache_data.iloc[-1]['low'] < state.fib_levels['1.0']:
                                     log(f'Bearish swing violated fib 1.0 - resetting', color='red')
                                     state.reset()
-                                    legs = legs[-2:]
+                                    legs = legs[-3:]
                                     start_index = cache_data.index.tolist().index(legs[0]['start'])
+                                    
                                 else:
                                     log(f'Bearish swing within fib range - ignoring', color='yellow')
                                     # نادیده گرفتن این swing و ادامه با fib قبلی
                                     
                             elif last_swing_type == 'bearish' and swing_type == 'bullish':
-                                if cache_data.iloc[-1]['low'] < state.fib_levels['1.0']:
+                                if cache_data.iloc[-1]['high'] > state.fib_levels['1.0']:
                                     log(f'Bullish swing violated fib 1.0 - resetting', color='red')
                                     state.reset()
-                                    legs = legs[-2:]
+                                    legs = legs[-3:]
                                     start_index = cache_data.index.tolist().index(legs[0]['start'])
                                 else:
                                     log(f'Bullish swing within fib range - ignoring', color='yellow')
-                                    # نادیده گرفتن این swing و ادامه با fib قبلی
 
+                        elif is_swing == False and state.fib_levels:
+                            
+                            if last_swing_type == 'bullish':
+                                start_price = cache_data.iloc[-1]['high']  #fib0
+                                end_price = legs[1]['end_value']  #fib1
+                                if state.fib_levels['0.0'] < cache_data.iloc[-1]['high']:
+                                    log(f'update fib_levels value code:7117455 {cache_data.iloc[-1].name}', color='green')
+                                    start_price = cache_data.iloc[-1]['high']
+                                    state.fib_levels = fibonacci_retracement(end_price=end_price, start_price=start_price)
+                                    fib0_point = cache_data.index.tolist().index(cache_data.iloc[-1].name)
+                                    fib_index = cache_data.iloc[-1].name
+                                
+                                elif cache_data.iloc[-1]['low'] <= state.fib_levels['0.705']:
+                                    if state.last_touched_705_point_up is None:
+                                        log(f'first touch 705 point code:7318455', color='green')
+                                        state.last_touched_705_point_up = cache_data.iloc[-1]
+                                    elif cache_data.iloc[-1]['status'] != state.last_touched_705_point_up['status']:
+                                        log(f'Second touch 705 point code:7218455 {cache_data.iloc[-1].name}', color='green')
+                                        state.true_position = True                               
+
+                            if last_swing_type == 'bearish':
+                                start_price = cache_data.iloc[-1]['low']  #fib0
+                                end_price = legs[1]['end_value']  #fib1
+                                if state.fib_levels['0.0'] > cache_data.iloc[-1]['low']:
+                                    log(f'update fib_levels value code:6127455 {cache_data.iloc[-1].name}', color='green')
+                                    start_price = cache_data.iloc[-1]['low']
+                                    state.fib_levels = fibonacci_retracement(start_price=start_price, end_price=end_price)
+                                    fib0_point = cache_data.index.tolist().index(cache_data.iloc[-1].name)
+                                    fib_index = cache_data.iloc[-1].name
+                                
+                                elif cache_data.iloc[-1]['high'] >= state.fib_levels['0.705']:
+                                    if state.last_touched_705_point_down is None:
+                                        log(f'first touch 705 point code:6328455', color='red')
+                                        state.last_touched_705_point_down = cache_data.iloc[-1]
+                                    elif cache_data.iloc[-1]['status'] != state.last_touched_705_point_down['status']:
+                                        log(f'Second touch 705 point code:6228455 {cache_data.iloc[-1].name}', color='green')
+                                        state.true_position = True
+                        
                 # len legs <= 2
                 elif len(legs) < 3:
                     if len(legs) == 2:
