@@ -4,8 +4,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 import numpy as np
 import pytest
-from TradingProject.new_swing_final1.first_project.main_metatrader import main
-from TradingProject.new_swing_final1.first_project.utils import BotState
+from main_metatrader import main
+from utils import BotState
 
 # Import the function to test from the module
 
