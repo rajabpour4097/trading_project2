@@ -627,3 +627,63 @@ class MT5Connector:
         except Exception as e:
             print(f"❌ Error getting positions: {e}")
             return None
+    
+    def check_account_trading_permissions(self):
+        """بررسی دقیق مجوزهای معاملاتی حساب"""
+        account = mt5.account_info()
+        if not account:
+            print("❌ Account info not available")
+            return False
+        
+        print(f"🔍 Account Information:")
+        print(f"   Login: {account.login}")
+        print(f"   Server: {account.server}")
+        print(f"   Trade Mode: {account.trade_mode}")
+        print(f"   Trade Allowed: {account.trade_allowed}")
+        print(f"   Trade Expert: {account.trade_expert}")
+        print(f"   Margin Mode: {account.margin_mode}")
+        print(f"   Currency: {account.currency}")
+        print(f"   Balance: {account.balance}")
+        print(f"   Equity: {account.equity}")
+        print(f"   Margin: {account.margin}")
+        print(f"   Free Margin: {account.margin_free}")
+        print(f"   Margin Level: {account.margin_level}")
+        
+        # بررسی وضعیت Demo/Real
+        if account.trade_mode == 0:
+            print("📊 Account Type: Demo")
+        elif account.trade_mode == 1:
+            print("📊 Account Type: Real")
+        elif account.trade_mode == 2:
+            print("📊 Account Type: Contest")
+        
+        return account.trade_allowed and account.trade_expert
+    
+    def check_market_state(self):
+        """بررسی وضعیت بازار برای symbol"""
+        symbol_info = mt5.symbol_info(self.symbol)
+        if not symbol_info:
+            print(f"❌ Symbol {self.symbol} not found")
+            return False
+        
+        print(f"🏪 Market State for {self.symbol}:")
+        print(f"   Trade Mode: {symbol_info.trade_mode}")
+        print(f"   Trade Execution: {symbol_info.trade_exemode}")
+        print(f"   Session Deals: {symbol_info.session_deals}")
+        print(f"   Session Buy Orders: {symbol_info.session_buy_orders}")
+        print(f"   Session Sell Orders: {symbol_info.session_sell_orders}")
+        
+        # بررسی اینکه آیا معاملات مجاز است
+        if symbol_info.trade_mode == 0:
+            print("❌ Trading disabled for this symbol")
+            return False
+        elif symbol_info.trade_mode == 1:
+            print("✅ Trading enabled (Long only)")
+        elif symbol_info.trade_mode == 2:
+            print("✅ Trading enabled (Short only)")
+        elif symbol_info.trade_mode == 3:
+            print("✅ Trading enabled (Long and Short)")
+        elif symbol_info.trade_mode == 4:
+            print("✅ Trading enabled (Close only)")
+    
+        return True

@@ -52,6 +52,10 @@ def main():
     print("🔍 Testing broker filling modes...")
     mt5_conn.test_filling_modes()
     mt5_conn.check_trading_limits()
+    print("🔍 Checking account permissions...")
+    mt5_conn.check_account_trading_permissions()
+    print("🔍 Checking market state...")
+    mt5_conn.check_market_state()
     print("-" * 50)
 
     # اضافه کردن متغیر برای ذخیره آخرین داده
@@ -363,9 +367,15 @@ def main():
                     
                     if result:
                         log(f'✅ BUY order executed successfully', color='green')
+                        # اضافه کردن این خطوط برای debug
+                        log(f'📊 Order details: Ticket={result.order}, Price={result.price}, Volume={result.volume}', color='cyan')
+                        log(f'📊 Result code: {result.retcode}, Comment: {result.comment}', color='cyan')
                         position_open = True
                     else:
                         log(f'❌ BUY order failed', color='red')
+                        # اضافه کردن جزئیات خطا
+                        if result:
+                            log(f'❌ Error code: {result.retcode}, Comment: {result.comment}', color='red')
 
                     # ریست کردن state بعد از معامله
                     state.reset()
@@ -403,9 +413,15 @@ def main():
                     
                     if result:
                         log(f'✅ SELL order executed successfully', color='green')
+                        # اضافه کردن این خطوط برای debug
+                        log(f'📊 Order details: Ticket={result.order}, Price={result.price}, Volume={result.volume}', color='cyan')
+                        log(f'📊 Result code: {result.retcode}, Comment: {result.comment}', color='cyan')
                         position_open = True
                     else:
                         log(f'❌ SELL order failed', color='red')
+                        # اضافه کردن جزئیات خطا
+                        if result:
+                            log(f'❌ Error code: {result.retcode}, Comment: {result.comment}', color='red')
 
                     # ریست کردن state بعد از معامله
                     state.reset()
