@@ -11,8 +11,47 @@
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Trade\OrderInfo.mqh>
-#include "SwingTradingConfig.mqh"
-#include "SwingTradingHelpers.mqh"
+
+//--- Trading Configuration Constants
+#define LOT_SIZE_DEFAULT           0.01
+#define WIN_RATIO_DEFAULT          1.2
+#define THRESHOLD_DEFAULT          6
+#define WINDOW_SIZE_DEFAULT        100
+#define MIN_SWING_SIZE_DEFAULT     4
+#define FIB_705_LEVEL             0.705
+#define FIB_90_LEVEL              0.9
+#define MAGIC_NUMBER_DEFAULT       234000
+#define DEVIATION_DEFAULT          20
+#define MAX_SPREAD_DEFAULT         3.0
+#define MIN_BALANCE_DEFAULT        100
+#define MAX_DAILY_TRADES_DEFAULT   10
+#define ENTRY_TOLERANCE_DEFAULT    2.0
+#define LOOKBACK_PERIOD_DEFAULT    20
+#define MAX_RISK_PERCENT           2.0
+#define MIN_VOLATILITY             5.0
+#define MAX_VOLATILITY             50.0
+#define TRAILING_STOP_PIPS         10
+#define BREAK_EVEN_PIPS            10
+#define PARTIAL_CLOSE_PERCENT      50
+
+//--- Trading Sessions (Iran Time GMT+3:30)
+struct TradingSession {
+    int startHour;
+    int startMinute;
+    int endHour;
+    int endMinute;
+    string name;
+};
+
+const TradingSession LONDON_SESSION = {12, 30, 21, 30, "London"};
+const TradingSession NEWYORK_SESSION = {17, 30, 2, 30, "NewYork"};
+const TradingSession OVERLAP_LONDON_NY = {17, 30, 21, 30, "London-NY Overlap"};
+
+//--- Helper macros
+#define POINTS_TO_PIPS(points)     ((points) / 10.0)
+#define PIPS_TO_POINTS(pips)       ((pips) * 10.0)
+#define IS_BULLISH_CANDLE(rates, i) ((rates)[(i)].close >= (rates)[(i)].open)
+#define IS_BEARISH_CANDLE(rates, i) ((rates)[(i)].close < (rates)[(i)].open)
 
 //--- Input parameters
 input group "=== Trading Parameters ==="
@@ -746,6 +785,514 @@ void PrintFinalStats()
     Print("   Profitable Trades: ", stats.profitableTrades);
     Print("   Total P/L: ", stats.totalPL);
     Print("   Win Rate: ", (stats.executedTrades > 0) ? (double)stats.profitableTrades/stats.executedTrades*100 : 0, "%");
+}
+
+//+------------------------------------------------------------------+
+//| Helper Functions - Integrated from SwingTradingHelpers.mqh      |
+//+------------------------------------------------------------------+
+
+//--- Function to check if current time is within trading session
+bool IsWithinTradingSession(const TradingSession &session) {
+    MqlDateTime currentTime;
+    TimeToStruct(TimeGMT() + 12600, currentTime); // Convert to Iran time (GMT+3:30)
+    
+    int currentMinutes = currentTime.hour * 60 + currentTime.min;
+    int startMinutes = session.startHour * 60 + session.startMinute;
+    int endMinutes = session.endHour * 60 + session.endMinute;
+    
+    // Handle overnight sessions (like NY session)
+    if(startMinutes > endMinutes) {
+        return (currentMinutes >= startMinutes || currentMinutes <= endMinutes);
+    }
+    else {
+        return (currentMinutes >= startMinutes && currentMinutes <= endMinutes);
+    }
+}
+
+//--- Function to get current Iran time as string
+string GetIranTimeString() {
+    MqlDateTime iranTime;
+    TimeToStruct(TimeGMT() + 12600, iranTime); // GMT+3:30 for Iran
+    return StringFormat("%04d.%02d.%02d %02d:%02d:%02d", 
+                       iranTime.year, iranTime.mon, iranTime.day,
+                       iranTime.hour, iranTime.min, iranTime.sec);
+}
+
+//--- Function to check if it's weekend in Iran
+bool IsIranWeekend() {
+    MqlDateTime iranTime;
+    TimeToStruct(TimeGMT() + 12600, iranTime);
+    
+    // In Iran: Thursday = 4, Friday = 5 (weekend)
+    // But forex market: Friday evening to Sunday evening is closed
+    return (iranTime.day_of_week == 5 || iranTime.day_of_week == 6);
+}
+
+//--- Reset bot state function
+void ResetBotState() {
+    ArrayInitialize(botState.fibLevels, 0);
+    botState.truePosition = false;
+    botState.hasTouched705Up = false;
+    botState.hasTouched705Down = false;
+    botState.hasValidFib = false;
+    botState.fibCreationTime = 0;
+    botState.fibStartPrice = 0;
+    botState.fibEndPrice = 0;
+    botState.consecutiveFailures = 0;
+    
+    // Clear touched points
+    ZeroMemory(botState.lastTouched705PointUp);
+    ZeroMemory(botState.lastTouched705PointDown);
+    
+    Print("🔄 Bot state reset");
+}
+
+//--- Calculate current market volatility
+double CalculateCurrentVolatility() {
+    if(ArraySize(rates) < 20) return 0;
+    
+    double sum = 0;
+    for(int i = 0; i < 20; i++) {
+        sum += (rates[i].high - rates[i].low);
+    }
+    
+    return (sum / 20) * MathPow(10, Digits() - 1); // Convert to pips
+}
+
+//--- Monitor risk levels
+void MonitorRiskLevels() {
+    double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    double drawdown = (balance - currentEquity) / balance * 100;
+    
+    if(drawdown > 10.0) { // 10% max drawdown
+        Print("🚨 Maximum drawdown reached: ", drawdown, "%");
+        if(positionOpen) {
+            CloseCurrentPosition("Max drawdown reached");
+        }
+        
+        // Disable trading for 1 hour
+        lastTradeTime = TimeCurrent() + 3600;
+    }
+    
+    // Update max drawdown
+    if(drawdown > botState.maxDrawdown) {
+        botState.maxDrawdown = drawdown;
+    }
+}
+
+//--- Update trailing stop
+void UpdateTrailingStop() {
+    if(!positionInfo.SelectByTicket(currentTicket)) return;
+    
+    double currentPrice = (positionInfo.PositionType() == POSITION_TYPE_BUY) ? 
+                         SymbolInfoDouble(Symbol(), SYMBOL_BID) : 
+                         SymbolInfoDouble(Symbol(), SYMBOL_ASK);
+    
+    double currentSL = positionInfo.StopLoss();
+    double newSL = currentSL;
+    
+    if(positionInfo.PositionType() == POSITION_TYPE_BUY) {
+        newSL = currentPrice - InpTrailingStopPips * Point() * 10;
+        if(newSL > currentSL + Point() * 10) { // Only move SL up
+            trade.PositionModify(currentTicket, newSL, positionInfo.TakeProfit());
+        }
+    }
+    else {
+        newSL = currentPrice + InpTrailingStopPips * Point() * 10;
+        if(newSL < currentSL - Point() * 10) { // Only move SL down
+            trade.PositionModify(currentTicket, newSL, positionInfo.TakeProfit());
+        }
+    }
+}
+
+//--- Process fibonacci updates
+void ProcessFibonacciUpdates(int currentIdx) {
+    if(!botState.hasValidFib) return;
+    
+    double currentHigh = rates[currentIdx].high;
+    double currentLow = rates[currentIdx].low;
+    
+    if(lastSwingType == "bullish") {
+        if(botState.fibLevels[0] < currentHigh) {
+            Print("🔄 Updating bullish fibonacci - new high detected");
+            double endPrice = botState.fibLevels[3]; // Keep fib 1.0
+            CalculateFibonacci(endPrice, currentHigh);
+            botState.fibCreationTime = rates[currentIdx].time;
+        }
+        else if(currentLow <= botState.fibLevels[1]) {
+            HandleFibonacciTouch(currentIdx, true);
+        }
+        else if(currentLow < botState.fibLevels[3]) {
+            Print("❌ Price broke below fib 1.0 - resetting state");
+            ResetBotState();
+        }
+    }
+    else if(lastSwingType == "bearish") {
+        if(botState.fibLevels[0] > currentLow) {
+            Print("🔄 Updating bearish fibonacci - new low detected");
+            double endPrice = botState.fibLevels[3]; // Keep fib 1.0
+            CalculateFibonacci(currentLow, endPrice);
+            botState.fibCreationTime = rates[currentIdx].time;
+        }
+        else if(currentHigh >= botState.fibLevels[1]) {
+            HandleFibonacciTouch(currentIdx, false);
+        }
+        else if(currentHigh > botState.fibLevels[3]) {
+            Print("❌ Price broke above fib 1.0 - resetting state");
+            ResetBotState();
+        }
+    }
+}
+
+//--- Calculate fibonacci levels
+void CalculateFibonacci(double startPrice, double endPrice) {
+    botState.fibLevels[0] = startPrice;  // 0.0
+    botState.fibLevels[1] = startPrice + InpFib705 * (endPrice - startPrice);  // 0.705
+    botState.fibLevels[2] = startPrice + InpFib90 * (endPrice - startPrice);   // 0.9
+    botState.fibLevels[3] = endPrice;    // 1.0
+    botState.hasValidFib = true;
+    
+    Print("📊 Fibonacci levels calculated:");
+    Print("   0.0% = ", botState.fibLevels[0]);
+    Print("   70.5% = ", botState.fibLevels[1]);
+    Print("   90.0% = ", botState.fibLevels[2]);
+    Print("   100.0% = ", botState.fibLevels[3]);
+}
+
+//--- Handle fibonacci touch
+void HandleFibonacciTouch(int currentIdx, bool isBullish) {
+    string currentStatus = IS_BULLISH_CANDLE(rates, currentIdx) ? "bullish" : "bearish";
+    
+    if(isBullish) {
+        if(!botState.hasTouched705Up) {
+            Print("🎯 First touch of 0.705 level (bullish setup)");
+            botState.lastTouched705PointUp = rates[currentIdx];
+            botState.hasTouched705Up = true;
+        }
+        else {
+            string lastStatus = (botState.lastTouched705PointUp.close >= botState.lastTouched705PointUp.open) ? "bullish" : "bearish";
+            if(currentStatus != lastStatus) {
+                Print("✅ Second touch of 0.705 level with different candle type - ENTRY SIGNAL!");
+                botState.truePosition = true;
+            }
+        }
+    }
+    else {
+        if(!botState.hasTouched705Down) {
+            Print("🎯 First touch of 0.705 level (bearish setup)");
+            botState.lastTouched705PointDown = rates[currentIdx];
+            botState.hasTouched705Down = true;
+        }
+        else {
+            string lastStatus = (botState.lastTouched705PointDown.close >= botState.lastTouched705PointDown.open) ? "bullish" : "bearish";
+            if(currentStatus != lastStatus) {
+                Print("✅ Second touch of 0.705 level with different candle type - ENTRY SIGNAL!");
+                botState.truePosition = true;
+            }
+        }
+    }
+}
+
+//--- Monitor positions
+void MonitorPositions() {
+    int totalPositions = PositionsTotal();
+    
+    if(totalPositions == 0 && positionOpen) {
+        Print("🏁 Position closed by market");
+        positionOpen = false;
+        currentTicket = 0;
+    }
+}
+
+//--- Update statistics
+void UpdateStatistics() {
+    // Update daily statistics and other metrics
+    botState.totalTrades = stats.executedTrades;
+    botState.totalProfit = stats.totalPL;
+    
+    if(stats.executedTrades > 0) {
+        botState.winningTrades = stats.profitableTrades;
+    }
+}
+
+//--- Get deinit reason text
+string GetDeInitReasonText(int reason) {
+    switch(reason) {
+        case REASON_ACCOUNT: return "Account changed";
+        case REASON_CHARTCHANGE: return "Chart changed";
+        case REASON_CHARTCLOSE: return "Chart closed";
+        case REASON_PARAMETERS: return "Parameters changed";
+        case REASON_RECOMPILE: return "Recompiled";
+        case REASON_REMOVE: return "Removed from chart";
+        case REASON_TEMPLATE: return "Template changed";
+        default: return "Unknown reason";
+    }
+}
+
+//--- Handle position close
+void HandlePositionClose(const MqlTradeTransaction& trans) {
+    if(trans.deal_type == DEAL_TYPE_BUY || trans.deal_type == DEAL_TYPE_SELL) {
+        double profit = 0;
+        if(HistoryDealSelect(trans.deal)) {
+            profit = HistoryDealGetDouble(trans.deal, DEAL_PROFIT);
+            stats.totalPL += profit;
+            
+            if(profit > 0) {
+                stats.profitableTrades++;
+                botState.consecutiveFailures = 0;
+                Print("✅ Profitable trade closed: ", profit);
+            }
+            else {
+                botState.consecutiveFailures++;
+                Print("❌ Loss trade closed: ", profit);
+            }
+        }
+        
+        positionOpen = false;
+        currentTicket = 0;
+    }
+}
+
+//--- Simple leg detection (simplified version)
+void DetectLegsEnhanced(int startIdx, int endIdx) {
+    ArrayFree(legs);
+    legsCount = 0;
+    
+    if(endIdx - startIdx < 3) return;
+    
+    // Simplified leg detection logic
+    double threshold = InpThreshold;
+    int legIndex = 0;
+    
+    for(int i = startIdx + 10; i < endIdx - 10; i += 5) { // Sample every 5 bars
+        double currentHigh = rates[i].high;
+        double currentLow = rates[i].low;
+        double prevHigh = rates[i + 5].high;
+        double prevLow = rates[i + 5].low;
+        
+        double priceDiff = MathAbs(currentHigh - prevLow) * MathPow(10, Digits() - 1);
+        
+        if(priceDiff >= threshold && legIndex < 1000) {
+            ArrayResize(legs, legIndex + 1);
+            legs[legIndex].startTime = rates[i + 5].time;
+            legs[legIndex].endTime = rates[i].time;
+            legs[legIndex].startValue = prevLow;
+            legs[legIndex].endValue = currentHigh;
+            legs[legIndex].length = priceDiff;
+            legs[legIndex].direction = (currentHigh > prevLow) ? "up" : "down";
+            legs[legIndex].confirmed = true;
+            legIndex++;
+        }
+    }
+    
+    legsCount = legIndex;
+    if(legsCount > 0) {
+        Print("📈 Detected ", legsCount, " legs");
+    }
+}
+
+//--- Simplified swing detection
+bool DetectSwingWithConfirmation(EnhancedLeg &lastLegs[], string &swingType) {
+    if(ArraySize(lastLegs) != 3) return false;
+    
+    swingType = "";
+    bool isSwing = false;
+    
+    // Simple bullish swing pattern
+    if(lastLegs[1].endValue > lastLegs[0].startValue && 
+       lastLegs[0].endValue > lastLegs[1].endValue) {
+        swingType = "bullish";
+        isSwing = true;
+    }
+    // Simple bearish swing pattern
+    else if(lastLegs[1].endValue < lastLegs[0].startValue && 
+            lastLegs[0].endValue < lastLegs[1].endValue) {
+        swingType = "bearish";
+        isSwing = true;
+    }
+    
+    return isSwing;
+}
+
+//--- Calculate swing confidence (simplified)
+double CalculateSwingConfidence(EnhancedLeg &lastLegs[], string swingType) {
+    return 0.8; // Return high confidence for simplicity
+}
+
+//--- Process confirmed swing (simplified)
+void ProcessConfirmedSwing(string swingType, bool isSwing) {
+    stats.totalSignals++;
+    
+    if(isSwing) {
+        stats.validSignals++;
+        lastSwingType = swingType;
+        
+        Print("🔍 Processing confirmed swing: ", swingType);
+        
+        // Create fibonacci levels based on recent price action
+        if(!botState.hasValidFib) {
+            double currentHigh = rates[0].high;
+            double currentLow = rates[0].low;
+            
+            if(swingType == "bullish") {
+                CalculateFibonacci(currentLow, currentHigh);
+            }
+            else {
+                CalculateFibonacci(currentHigh, currentLow);
+            }
+            
+            botState.fibCreationTime = rates[0].time;
+        }
+    }
+}
+
+//--- Validate market conditions (simplified)
+bool ValidateMarketConditions() {
+    // Check spread
+    double spread = POINTS_TO_PIPS(SymbolInfoInteger(Symbol(), SYMBOL_SPREAD));
+    if(spread > InpMaxSpread) {
+        return false;
+    }
+    
+    // Check volatility
+    double volatility = CalculateCurrentVolatility();
+    if(volatility < MIN_VOLATILITY || volatility > MAX_VOLATILITY) {
+        return false;
+    }
+    
+    return true;
+}
+
+//--- Calculate stop levels
+bool CalculateStopLevels(double entryPrice, bool isBuy, double &sl, double &tp) {
+    if(!botState.hasValidFib) return false;
+    
+    // Determine stop loss
+    if(MathAbs(botState.fibLevels[2] - entryPrice) * MathPow(10, Digits() - 1) < 2) {
+        sl = botState.fibLevels[3]; // Use fib 1.0
+    }
+    else {
+        sl = botState.fibLevels[2]; // Use fib 0.9
+    }
+    
+    // Calculate take profit
+    double stopDistance = MathAbs(entryPrice - sl);
+    if(isBuy) {
+        tp = entryPrice + (stopDistance * InpWinRatio);
+    }
+    else {
+        tp = entryPrice - (stopDistance * InpWinRatio);
+    }
+    
+    // Normalize prices
+    sl = NormalizeDouble(sl, Digits());
+    tp = NormalizeDouble(tp, Digits());
+    
+    return true;
+}
+
+//--- Validate trade request
+bool ValidateTradeRequest(ENUM_ORDER_TYPE orderType, double volume, double price, double sl, double tp) {
+    // Check volume
+    double minVol = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_MIN);
+    double maxVol = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_MAX);
+    
+    if(volume < minVol || volume > maxVol) {
+        Print("❌ Invalid volume: ", volume);
+        return false;
+    }
+    
+    return true;
+}
+
+//--- Move to break even
+void MoveToBreakEven() {
+    if(!positionInfo.SelectByTicket(currentTicket)) return;
+    
+    double openPrice = positionInfo.PriceOpen();
+    double currentSL = positionInfo.StopLoss();
+    
+    // Check if SL is not already at break-even
+    if(MathAbs(currentSL - openPrice) < Point() * 5) return;
+    
+    trade.PositionModify(currentTicket, openPrice, positionInfo.TakeProfit());
+    Print("📊 Moved stop loss to break-even for ticket: ", currentTicket);
+}
+
+//--- Take partial profit
+void TakePartialProfit() {
+    if(!positionInfo.SelectByTicket(currentTicket)) return;
+    
+    double currentVolume = positionInfo.Volume();
+    double partialVolume = currentVolume * PARTIAL_CLOSE_PERCENT / 100;
+    
+    // Normalize volume
+    double stepVol = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_STEP);
+    partialVolume = MathFloor(partialVolume / stepVol) * stepVol;
+    
+    if(partialVolume >= SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_MIN)) {
+        if(trade.PositionClosePartial(currentTicket, partialVolume)) {
+            Print("📊 Partial profit taken: ", partialVolume, " lots");
+        }
+    }
+}
+
+//--- Close current position
+void CloseCurrentPosition(string reason) {
+    if(trade.PositionClose(currentTicket)) {
+        Print("🔒 Position closed: ", reason);
+        positionOpen = false;
+        currentTicket = 0;
+    }
+}
+
+//--- Send trade notification
+void SendTradeNotification(string action, double price, double sl, double tp, double volume) {
+    string subject = StringFormat("Swing EA - %s Trade Executed", action);
+    string body = StringFormat(
+        "Trade Details:\n"
+        "Symbol: %s\n"
+        "Action: %s\n"
+        "Volume: %.2f\n"
+        "Price: %.5f\n"
+        "Stop Loss: %.5f\n"
+        "Take Profit: %.5f\n"
+        "Time: %s\n"
+        "Balance: %.2f",
+        Symbol(), action, volume, price, sl, tp, 
+        TimeToString(TimeCurrent()), AccountInfoDouble(ACCOUNT_BALANCE)
+    );
+    
+    SendMail(subject, body);
+}
+
+void CheckSymbolProperties() {
+    Print("📊 Symbol Properties Check:");
+    Print("   Symbol: ", Symbol());
+    Print("   Digits: ", Digits());
+    Print("   Point: ", Point());
+    Print("   Spread: ", POINTS_TO_PIPS(SymbolInfoInteger(Symbol(), SYMBOL_SPREAD)), " pips");
+}
+
+void CheckTradingLimits() {
+    double minLot = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_MIN);
+    double maxLot = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_MAX);
+    double stepLot = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_STEP);
+    
+    Print("📊 Trading Limits Check:");
+    Print("   Min Lot: ", minLot);
+    Print("   Max Lot: ", maxLot);
+    Print("   Lot Step: ", stepLot);
+}
+
+void CheckAccountPermissions() {
+    Print("📊 Account Permissions Check:");
+    Print("   Terminal Trading: ", TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) ? "Allowed" : "Disabled");
+    Print("   EA Trading: ", MQLInfoInteger(MQL_TRADE_ALLOWED) ? "Allowed" : "Disabled");
+    Print("   Account Trading: ", AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) ? "Allowed" : "Disabled");
+    Print("   Balance: ", AccountInfoDouble(ACCOUNT_BALANCE));
+    Print("   Equity: ", AccountInfoDouble(ACCOUNT_EQUITY));
 }
 
 // Additional helper functions would continue here...
