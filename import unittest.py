@@ -4,10 +4,10 @@ import pandas as pd
 from datetime import datetime, timedelta
 import numpy as np
 import pytest
+
+# Import the necessary modules directly
 from main_metatrader import main
 from utils import BotState
-
-# Import the function to test from the module
 
 class TestMainMetatrader(unittest.TestCase):
     
@@ -15,13 +15,13 @@ class TestMainMetatrader(unittest.TestCase):
         # Create sample market data for testing
         self.sample_data = self.create_sample_data()
         
-        # Set up the patchers
-        self.mt5_conn_patcher = patch('TradingProject.new_swing_final1.first_project.main_metatrader.MT5Connector')
-        self.get_legs_patcher = patch('TradingProject.new_swing_final1.first_project.main_metatrader.get_legs')
-        self.get_swing_points_patcher = patch('TradingProject.new_swing_final1.first_project.main_metatrader.get_swing_points')
-        self.fib_patcher = patch('TradingProject.new_swing_final1.first_project.main_metatrader.fibonacci_retracement')
-        self.log_patcher = patch('TradingProject.new_swing_final1.first_project.main_metatrader.log')
-        self.sleep_patcher = patch('TradingProject.new_swing_final1.first_project.main_metatrader.sleep')
+        # Set up the patchers - use direct module names instead of full package paths
+        self.mt5_conn_patcher = patch('main_metatrader.MT5Connector')
+        self.get_legs_patcher = patch('main_metatrader.get_legs')
+        self.get_swing_points_patcher = patch('main_metatrader.get_swing_points')
+        self.fib_patcher = patch('main_metatrader.fibonacci_retracement')
+        self.log_patcher = patch('main_metatrader.log')
+        self.sleep_patcher = patch('main_metatrader.sleep')
         
         # Start the patchers
         self.mock_mt5_conn = self.mt5_conn_patcher.start()
@@ -85,11 +85,10 @@ class TestMainMetatrader(unittest.TestCase):
         df['status'] = np.where(df['open'] > df['close'], 'bearish', 'bullish')
         return df
     
-    @patch('TradingProject.new_swing_final1.first_project.main_metatrader.BotState')
+    @patch('main_metatrader.BotState')
     def test_main_initialization(self, mock_bot_state):
         """Test that the main function initializes correctly"""
         # Configure the mock to exit the infinite loop after one iteration
-        # We'll use a side effect that raises an exception after the first iteration
         self.mt5_instance.get_historical_data.side_effect = [
             self.sample_data,  # First call returns data
             KeyboardInterrupt  # Second call raises KeyboardInterrupt to exit loop
@@ -105,7 +104,7 @@ class TestMainMetatrader(unittest.TestCase):
         self.mt5_instance.test_filling_modes.assert_called_once()
         self.mt5_instance.check_trading_limits.assert_called_once()
     
-    @patch('TradingProject.new_swing_final1.first_project.main_metatrader.BotState')
+    @patch('main_metatrader.BotState')
     def test_bullish_swing_detection(self, mock_bot_state):
         """Test that bullish swings are correctly identified and processed"""
         # Configure mocks for a bullish swing scenario
@@ -130,7 +129,7 @@ class TestMainMetatrader(unittest.TestCase):
         # Check that fibonacci levels were calculated (this will happen for a bullish swing)
         self.mock_fib.assert_called()
     
-    @patch('TradingProject.new_swing_final1.first_project.main_metatrader.BotState')
+    @patch('main_metatrader.BotState')
     def test_trading_execution_bullish(self, mock_bot_state):
         """Test that trades are executed correctly for bullish swings"""
         # Configure mocks for a trading scenario
