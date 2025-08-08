@@ -122,6 +122,12 @@ def main():
                     legs = legs[-3:]
                     swing_type, is_swing = get_swing_points(data=cache_data, legs=legs)
 
+                    if is_swing == False and state.fib_levels is None:
+                        log(f'No swing or fib levels and legs>2', color='blue')
+                        log(f"{cache_data.loc[legs[0]['start']].name} {cache_data.loc[legs[0]['end']].name} "
+                            f"{cache_data.loc[legs[1]['start']].name} {cache_data.loc[legs[1]['end']].name} "
+                            f"{cache_data.loc[legs[2]['start']].name} {cache_data.loc[legs[2]['end']].name}", color='yellow')
+
                     if is_swing or state.fib_levels:
                         log(f'1- is_swing or fib_levels is not None code:411112', color='blue')
                         log(f"{swing_type} | {cache_data.loc[legs[0]['start']].name} {cache_data.loc[legs[0]['end']].name} "
@@ -339,92 +345,107 @@ def main():
                 # بخش معاملات - sell and buy statement
                 if state.true_position and (last_swing_type == 'bullish' or swing_type == 'bullish'):
                     current_open_point = cache_data.iloc[-1]['close']
-                    
                     log(f'Start long position income {cache_data.iloc[-1].name}', color='blue')
                     log(f'current_open_point: {current_open_point}', color='blue')
-                    
-                    # تعیین stop loss
-                    if abs(state.fib_levels['0.9'] - current_open_point) * 10000 < 2:
-                        stop = state.fib_levels['1.0']
-                        log(f'stop = fib_levels[1.0] {stop}', color='red')
-                    else:
-                        stop = state.fib_levels['0.9']
-                        log(f'stop = fib_levels[0.9] {stop}', color='red')
-                    
-                    stop_distance = abs(current_open_point - stop)
-                    reward_end = current_open_point + (stop_distance * win_ratio)
-                    
-                    log(f'stop = {stop}', color='green')
-                    log(f'reward_end = {reward_end}', color='green')
-                    
-                    # اجرای معامله در MT5
-                    result = mt5_conn.open_buy_position(
-                        price=current_open_point,
-                        sl=stop,
-                        tp=reward_end,
-                        comment=f"Bullish Swing {swing_type}"
-                    )
-                    
-                    if result:
-                        log(f'✅ BUY order executed successfully', color='green')
-                        # اضافه کردن این خطوط برای debug
-                        log(f'📊 Order details: Ticket={result.order}, Price={result.price}, Volume={result.volume}', color='cyan')
-                        log(f'📊 Result code: {result.retcode}, Comment: {result.comment}', color='cyan')
-                        position_open = True
-                    else:
-                        log(f'❌ BUY order failed', color='red')
-                        # اضافه کردن جزئیات خطا
-                        if result:
-                            log(f'❌ Error code: {result.retcode}, Comment: {result.comment}', color='red')
 
-                    # ریست کردن state بعد از معامله
-                    state.reset()
+                    # انتخاب استاپ مناسب (فقط سطوحی که زیر قیمت ورود هستند برای BUY معتبرند)
+                    raw_stop_90 = state.fib_levels.get('0.9')
+                    raw_stop_100 = state.fib_levels.get('1.0')
+                    candidates = [s for s in [raw_stop_90, raw_stop_100] if s is not None and s < current_open_point]
+
+                    if not candidates:
+                        log(f'❌ No valid STOP below entry for BUY (fib 0.9={raw_stop_90}, 1.0={raw_stop_100}, entry={current_open_point}) -> skip trade', color='red')
+                        state.reset()
+                    else:
+                        # منطق قبلی: اگر فاصله تا 0.9 خیلی کم بود از 1.0 استفاده می‌کرد؛ حالا امن‌تر:
+                        # نزدیک‌ترین استاپ زیر قیمت ورود
+                        stop = max(candidates)  # کمترین فاصله (محافظه‌کارانه‌تر)
+                        log(f'stop (validated) = {stop}', color='red')
+
+                        stop_distance = abs(current_open_point - stop)
+                        if stop_distance * 10000 < 1:
+                            log(f'❌ Stop distance too tight ({stop_distance:.5f}) -> skip', color='red')
+                            state.reset()
+                        else:
+                            reward_end = current_open_point + (stop_distance * win_ratio)
+                            if reward_end <= current_open_point:
+                                log(f'❌ Invalid TP computed (reward_end <= entry) -> skip', color='red')
+                                state.reset()
+                            else:
+                                log(f'stop = {stop}', color='green')
+                                log(f'reward_end = {reward_end}', color='green')
+
+                                result = mt5_conn.open_buy_position(
+                                    price=current_open_point,
+                                    sl=stop,
+                                    tp=reward_end,
+                                    comment=f"Bullish Swing {swing_type}"
+                                )
+
+                                if result and getattr(result, 'retcode', None) == 10009:
+                                    log(f'✅ BUY order executed successfully', color='green')
+                                    log(f'📊 Ticket={result.order} Price={result.price} Volume={result.volume}', color='cyan')
+                                else:
+                                    if result:
+                                        log(f'❌ BUY failed retcode={result.retcode} comment={result.comment}', color='red')
+                                    else:
+                                        log(f'❌ BUY failed (no result object)', color='red')
+
+                                # بعد از تلاش معامله چه موفق چه ناموفق ریست
+                                state.reset()
+
                     legs = []
                     start_index = cache_data.index.tolist().index(cache_data.iloc[-1].name)
                     log(f'End long position, start_index: {start_index}', color='black')
 
                 if state.true_position and (last_swing_type == 'bearish' or swing_type == 'bearish'):
                     current_open_point = cache_data.iloc[-1]['close']
-                    
                     log(f'Start short position income {cache_data.iloc[-1].name}', color='red')
                     log(f'current_open_point: {current_open_point}', color='red')
-                    
-                    # تعیین stop loss
-                    if abs(state.fib_levels['0.9'] - current_open_point) * 10000 < 2:
-                        stop = state.fib_levels['1.0'] 
-                        log(f'stop = fib_levels[1.0] {stop}', color='red')
-                    else:
-                        stop = state.fib_levels['0.9']
-                        log(f'stop = fib_levels[0.9] {stop}', color='red')
-                        
-                    stop_distance = abs(current_open_point - stop)
-                    reward_end = current_open_point - (stop_distance * win_ratio)
-                    
-                    log(f'stop = {stop}', color='red')
-                    log(f'reward_end = {reward_end}', color='red')
-                    
-                    # اجرای معامله در MT5
-                    result = mt5_conn.open_sell_position(
-                        price=current_open_point,
-                        sl=stop,
-                        tp=reward_end,
-                        comment=f"Bearish Swing {swing_type}"
-                    )
-                    
-                    if result:
-                        log(f'✅ SELL order executed successfully', color='green')
-                        # اضافه کردن این خطوط برای debug
-                        log(f'📊 Order details: Ticket={result.order}, Price={result.price}, Volume={result.volume}', color='cyan')
-                        log(f'📊 Result code: {result.retcode}, Comment: {result.comment}', color='cyan')
-                        position_open = True
-                    else:
-                        log(f'❌ SELL order failed', color='red')
-                        # اضافه کردن جزئیات خطا
-                        if result:
-                            log(f'❌ Error code: {result.retcode}, Comment: {result.comment}', color='red')
 
-                    # ریست کردن state بعد از معامله
-                    state.reset()
+                    raw_stop_90 = state.fib_levels.get('0.9')
+                    raw_stop_100 = state.fib_levels.get('1.0')
+                    # استاپ معتبر برای SELL باید بالای قیمت ورود باشد
+                    candidates = [s for s in [raw_stop_90, raw_stop_100] if s is not None and s > current_open_point]
+
+                    if not candidates:
+                        log(f'❌ No valid STOP above entry for SELL (fib 0.9={raw_stop_90}, 1.0={raw_stop_100}, entry={current_open_point}) -> skip trade', color='red')
+                        state.reset()
+                    else:
+                        stop = min(candidates)  # نزدیک‌ترین استاپ بالای ورود
+                        log(f'stop (validated) = {stop}', color='red')
+
+                        stop_distance = abs(current_open_point - stop)
+                        if stop_distance * 10000 < 1:
+                            log(f'❌ Stop distance too tight ({stop_distance:.5f}) -> skip', color='red')
+                            state.reset()
+                        else:
+                            reward_end = current_open_point - (stop_distance * win_ratio)
+                            if reward_end >= current_open_point:
+                                log(f'❌ Invalid TP computed (reward_end >= entry) -> skip', color='red')
+                                state.reset()
+                            else:
+                                log(f'stop = {stop}', color='red')
+                                log(f'reward_end = {reward_end}', color='red')
+
+                                result = mt5_conn.open_sell_position(
+                                    price=current_open_point,
+                                    sl=stop,
+                                    tp=reward_end,
+                                    comment=f"Bearish Swing {swing_type}"
+                                )
+
+                                if result and getattr(result, 'retcode', None) == 10009:
+                                    log(f'✅ SELL order executed successfully', color='green')
+                                    log(f'📊 Ticket={result.order} Price={result.price} Volume={result.volume}', color='cyan')
+                                else:
+                                    if result:
+                                        log(f'❌ SELL failed retcode={result.retcode} comment={result.comment}', color='red')
+                                    else:
+                                        log(f'❌ SELL failed (no result object)', color='red')
+
+                                state.reset()
+
                     legs = []
                     start_index = cache_data.index.tolist().index(cache_data.iloc[-1].name)
                     log(f'End short position, start_index: {start_index}', color='black')

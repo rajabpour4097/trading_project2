@@ -387,220 +387,94 @@ class MT5Connector:
                 print("❌ Failed to make symbol visible")
     
     def calculate_valid_stops(self, entry_price, sl_price, tp_price, order_type):
-        """محاسبه stop loss و take profit معتبر با در نظر گیری stops level"""
+        """محاسبه و تنظیم SL/TP معتبر. برمی‌گرداند (sl_adjusted, tp_adjusted) یا None در خطای جدی."""
         symbol_info = mt5.symbol_info(self.symbol)
         if not symbol_info:
-            return sl_price, tp_price
-        
-        # دریافت stops level (حداقل فاصله از قیمت فعلی)
+            print("❌ Symbol info not available")
+            return None, None
+
         stops_level = symbol_info.trade_stops_level
         point = symbol_info.point
-        
-        # محاسبه حداقل فاصله بر حسب point
         min_distance = stops_level * point
-        
         print(f"🔍 Stops Level: {stops_level} points ({min_distance:.5f} price)")
-        
-        # برای BUY orders
+
+        # فاصله‌ها
         if order_type == mt5.ORDER_TYPE_BUY:
-            # SL باید کمتر از entry باشد و حداقل فاصله را رعایت کند
-            min_sl = entry_price - min_distance
-            if sl_price > min_sl:
-                sl_price = min_sl
-                print(f"🔧 SL adjusted to: {sl_price:.5f}")
-            
-            # TP باید بیشتر از entry باشد و حداقل فاصله را رعایت کند
-            min_tp = entry_price + min_distance
-            if tp_price < min_tp:
-                tp_price = min_tp
-                print(f"🔧 TP adjusted to: {tp_price:.5f}")
-        
-        # برای SELL orders
+            # SL باید پایین‌تر باشد
+            if sl_price >= entry_price:
+                print(f"⚠️ Invalid BUY SL >= entry (SL={sl_price}, entry={entry_price}) -> adjusting to entry - 2*min_distance")
+                sl_price = entry_price - max(min_distance * 2, 3 * point)
+            if tp_price <= entry_price:
+                print(f"⚠️ Invalid BUY TP <= entry (TP={tp_price}, entry={entry_price}) -> adjusting to entry + max distance")
+                tp_price = entry_price + max(abs(entry_price - sl_price) * 1.2, min_distance * 2)
+
+            # اعمال حداقل فاصله
+            if (entry_price - sl_price) < min_distance:
+                sl_price = entry_price - min_distance
+            if (tp_price - entry_price) < min_distance:
+                tp_price = entry_price + min_distance
+
         elif order_type == mt5.ORDER_TYPE_SELL:
-            # SL باید بیشتر از entry باشد و حداقل فاصله را رعایت کند
-            max_sl = entry_price + min_distance
-            if sl_price < max_sl:
-                sl_price = max_sl
-                print(f"🔧 SL adjusted to: {sl_price:.5f}")
-            
-            # TP باید کمتر از entry باشد و حداقل فاصله را رعایت کند
-            max_tp = entry_price - min_distance
-            if tp_price > max_tp:
-                tp_price = max_tp
-                print(f"🔧 TP adjusted to: {tp_price:.5f}")
-        
-        return sl_price, tp_price
-    
-    def get_best_filling_mode(self):
-        """تشخیص بهترین filling mode با تست واقعی"""
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info:
-            return mt5.ORDER_FILLING_IOC
-        
-        # ترتیب اولویت برای تست
-        modes_to_test = []
-        
-        # بررسی پشتیبانی bit-wise
-        filling_mode = symbol_info.filling_mode
-        
-        if filling_mode & 1:  # FOK supported
-            modes_to_test.append(mt5.ORDER_FILLING_FOK)
-        if filling_mode & 2:  # IOC supported  
-            modes_to_test.append(mt5.ORDER_FILLING_IOC)
-        if filling_mode == 0:  # Return supported
-            modes_to_test.append(mt5.ORDER_FILLING_RETURN)
-        
-        # اگر هیچ mode تشخیص داده نشد، همه را تست کن
-        if not modes_to_test:
-            modes_to_test = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN]
-        
-        print(f"🧪 Testing filling modes: {modes_to_test}")
-        return modes_to_test[0] if modes_to_test else mt5.ORDER_FILLING_IOC
-    
-    def open_sell_position(self, price, sl, tp, comment=""):
-        """باز کردن پوزیشن فروش با بررسی دقیق stops"""
-        iran_time = self.get_iran_time()
-        comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
-        
-        # دریافت قیمت فعلی
-        tick = mt5.symbol_info_tick(self.symbol)
-        if not tick:
-            print("❌ Unable to get current tick")
-            return None
-        
-        # استفاده از bid price برای SELL
-        entry_price = tick.bid
-        
-        # تنظیم stops معتبر
-        sl_adjusted, tp_adjusted = self.calculate_valid_stops(
-            entry_price, sl, tp, mt5.ORDER_TYPE_SELL
-        )
-        
-        # دریافت بهترین filling mode
-        filling_mode = self.get_best_filling_mode()
-        
-        # ساخت request
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": self.symbol,
-            "volume": self.lot,
-            "type": mt5.ORDER_TYPE_SELL,
-            "price": entry_price,
-            "sl": sl_adjusted,
-            "tp": tp_adjusted,
-            "deviation": self.deviation,
-            "magic": self.magic,
-            "comment": comment_with_time,
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": filling_mode,
-        }
-        
-        print(f"📤 Sending SELL order:")
-        print(f"   Entry Price: {entry_price:.5f}")
-        print(f"   SL (Original/Adjusted): {sl:.5f} / {sl_adjusted:.5f}")
-        print(f"   TP (Original/Adjusted): {tp:.5f} / {tp_adjusted:.5f}")
-        print(f"   Filling Mode: {filling_mode}")
-        
-        # ارسال order
-        result = mt5.order_send(request)
-        
-        if result and result.retcode == 10009:
-            print(f"✅ SELL order successful: ticket {result.order}")
-            return result
-        elif result:
-            print(f"❌ SELL order failed: {result.comment} (code: {result.retcode})")
-            
-            # تست با filling modes دیگر در صورت نیاز
-            if result.retcode == 10030:  # Unsupported filling mode
-                print("🔄 Trying alternative filling modes...")
-                
-                alternative_modes = [mt5.ORDER_FILLING_RETURN, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK]
-                
-                for alt_mode in alternative_modes:
-                    if alt_mode != filling_mode:
-                        request["type_filling"] = alt_mode
-                        print(f"🔄 Trying filling mode: {alt_mode}")
-                        
-                        result2 = mt5.order_send(request)
-                        if result2 and result2.retcode == 10009:
-                            print(f"✅ SELL success with mode {alt_mode}: ticket {result2.order}")
-                            return result2
-                        elif result2:
-                            print(f"❌ Failed with mode {alt_mode}: {result2.comment} (code: {result2.retcode})")
-        
-        return result
-    
+            if sl_price <= entry_price:
+                print(f"⚠️ Invalid SELL SL <= entry -> adjusting")
+                sl_price = entry_price + max(min_distance * 2, 3 * point)
+            if tp_price >= entry_price:
+                print(f"⚠️ Invalid SELL TP >= entry -> adjusting")
+                tp_price = entry_price - max(abs(entry_price - sl_price) * 1.2, min_distance * 2)
+
+            if (sl_price - entry_price) < min_distance:
+                sl_price = entry_price + min_distance
+            if (entry_price - tp_price) < min_distance:
+                tp_price = entry_price - min_distance
+
+        return round(sl_price, symbol_info.digits), round(tp_price, symbol_info.digits)
+
     def open_buy_position(self, price, sl, tp, comment=""):
-        """باز کردن پوزیشن خرید با بررسی دقیق stops"""
-        iran_time = self.get_iran_time()
-        comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
-        
-        # دریافت قیمت فعلی
+        """باز کردن پوزیشن BUY با اعتبارسنجی و جلوگیری از SL بالاتر از ورود."""
         tick = mt5.symbol_info_tick(self.symbol)
         if not tick:
-            print("❌ Unable to get current tick")
+            print("❌ No tick data")
             return None
-        
-        # استفاده از ask price برای BUY
-        entry_price = tick.ask
-        
-        # تنظیم stops معتبر
-        sl_adjusted, tp_adjusted = self.calculate_valid_stops(
-            entry_price, sl, tp, mt5.ORDER_TYPE_BUY
-        )
-        
-        # دریافت بهترین filling mode
+
+        entry_price = tick.ask  # ترجیح می‌دهیم قیمت لحظه‌ای
+        # اعتبار پایه
+        if sl >= entry_price:
+            print(f"⚠️ Provided SL ({sl}) >= entry ({entry_price}) -> will adjust")
+        if tp <= entry_price:
+            print(f"⚠️ Provided TP ({tp}) <= entry ({entry_price}) -> will adjust")
+
+        sl_adj, tp_adj = self.calculate_valid_stops(entry_price, sl, tp, mt5.ORDER_TYPE_BUY)
+        if sl_adj is None:
+            return None
+
         filling_mode = self.get_best_filling_mode()
-        
-        # ساخت request
+
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": self.symbol,
             "volume": self.lot,
             "type": mt5.ORDER_TYPE_BUY,
             "price": entry_price,
-            "sl": sl_adjusted,
-            "tp": tp_adjusted,
+            "sl": sl_adj,
+            "tp": tp_adj,
             "deviation": self.deviation,
             "magic": self.magic,
-            "comment": comment_with_time,
+            "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling_mode,
         }
-        
-        print(f"📤 Sending BUY order:")
-        print(f"   Entry Price: {entry_price:.5f}")
-        print(f"   SL (Original/Adjusted): {sl:.5f} / {sl_adjusted:.5f}")
-        print(f"   TP (Original/Adjusted): {tp:.5f} / {tp_adjusted:.5f}")
-        print(f"   Filling Mode: {filling_mode}")
-        
-        # ارسال order
+
+        print(f"📤 Sending BUY order:\n   Entry={entry_price:.5f} SL={sl_adj:.5f} TP={tp_adj:.5f} FillMode={filling_mode}")
         result = mt5.order_send(request)
-        
-        if result and result.retcode == 10009:
-            print(f"✅ BUY order successful: ticket {result.order}")
-            return result
-        elif result:
-            print(f"❌ BUY order failed: {result.comment} (code: {result.retcode})")
-            
-            # تست با filling modes دیگر در صورت نیاز
-            if result.retcode == 10030:  # Unsupported filling mode
-                print("🔄 Trying alternative filling modes...")
-                
-                alternative_modes = [mt5.ORDER_FILLING_RETURN, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK]
-                
-                for alt_mode in alternative_modes:
-                    if alt_mode != filling_mode:
-                        request["type_filling"] = alt_mode
-                        print(f"🔄 Trying filling mode: {alt_mode}")
-                        
-                        result2 = mt5.order_send(request)
-                        if result2 and result2.retcode == 10009:
-                            print(f"✅ BUY success with mode {alt_mode}: ticket {result2.order}")
-                            return result2
-                        elif result2:
-                            print(f"❌ Failed with mode {alt_mode}: {result2.comment} (code: {result2.retcode})")
-        
+
+        if result:
+            if result.retcode == 10009:
+                print("✅ BUY executed")
+            else:
+                print(f"❌ BUY failed: retcode={result.retcode} comment={result.comment}")
+        else:
+            print("❌ No result from order_send")
+
         return result
     
     def check_trading_limits(self):
