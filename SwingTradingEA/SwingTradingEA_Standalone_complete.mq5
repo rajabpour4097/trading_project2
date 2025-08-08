@@ -276,7 +276,7 @@ void ProcessNewData()
         
         if(legsCount > 2) {
             //--- Take last 3 legs مطابق Python
-            legs = ArrayResize(legs, MathMin(legsCount, 3)); // Keep only last 3
+            ArrayResize(legs, MathMin(legsCount, 3)); // Keep only last 3
             
             string swingType;
             bool isSwing = GetSwingPoints(swingType);
@@ -510,13 +510,13 @@ void ProcessInitialSwingDetection(string swingType, bool isSwing)
     
     if(swingType == "bullish") {
         if(rates[0].close >= legs[0].endValue) {
-            startPrice = rates[0].high;  // fib0
-            endPrice = legs[1].endValue;  // fib1
+            double localStartPrice = rates[0].high;  // بجای startPrice
+            double localEndPrice = legs[1].endValue;  // بجای endPrice
             
             if(rates[0].high >= legs[1].endValue) {
                 LogMessage(StringFormat("The %d of fib_levels value code:4116455 %s", 
                           fibCounter, TimeToString(rates[0].time)), "green");
-                CalculateFibonacci(endPrice, startPrice);
+                CalculateFibonacci(localEndPrice, localStartPrice);
                 fib0Point = 0; // Most recent bar index
                 fibIndex = rates[0].time;
                 lastLeg1Value = GetRateIndexByTime(legs[1].end);
@@ -542,13 +542,13 @@ void ProcessInitialSwingDetection(string swingType, bool isSwing)
     }
     else if(swingType == "bearish") {
         if(rates[0].close <= legs[0].endValue) {
-            startPrice = rates[0].low;   // fib0
-            endPrice = legs[1].endValue;  // fib1
+            double localStartPrice = rates[0].low;   // بجای startPrice
+            double localEndPrice = legs[1].endValue;  // بجای endPrice
             
             if(rates[0].low <= legs[1].endValue) {
                 LogMessage(StringFormat("The %d of fib_levels value code:4126455 %s", 
                           fibCounter, TimeToString(rates[0].time)), "green");
-                CalculateFibonacci(startPrice, endPrice);
+                CalculateFibonacci(localStartPrice, localEndPrice);
                 fib0Point = 0; // Most recent bar index
                 fibIndex = rates[0].time;
                 lastLeg1Value = GetRateIndexByTime(legs[1].end);
@@ -1072,7 +1072,7 @@ void ResetBotState()
 }
 
 //--- Log message with color (مطابق save_file.py)
-void LogMessage(string msg, string color = "")
+void LogMessage(string msg, string colorName = "")
 {
     Print(msg); // Simple print for now
     // Color information is noted but MT5 terminal doesn't support colored text
