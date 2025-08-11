@@ -365,129 +365,144 @@ def main():
                     log(f'Start long position income {cache_data.iloc[-1].name}', color='blue')
                     log(f'current_open_point: {current_open_point}', color='blue')
 
-                    # انتخاب استاپ مناسب (فقط سطوحی که زیر قیمت ورود هستند برای BUY معتبرند)
-                    raw_stop_90 = state.fib_levels.get('0.9')
-                    raw_stop_100 = state.fib_levels.get('1.0')
+                    raw_stop_90 = state.fib_levels.get('0.9') if state.fib_levels else None
+                    raw_stop_100 = state.fib_levels.get('1.0') if state.fib_levels else None
                     candidates = [s for s in [raw_stop_90, raw_stop_100] if s is not None and s < current_open_point]
+                    log(f'BUY candidates (raw) -> 0.9={raw_stop_90}, 1.0={raw_stop_100}, chosen list={candidates}', color='lightcyan_ex')
 
                     if not candidates:
-                        # Orientation might be wrong or prices degenerate; try rebuilding once
                         if state.fib_levels:
                             log('⚠️ No BUY stops below entry – retrying fib orientation', color='magenta')
-                            # Rebuild with enforced orientation using current extremes
                             recent_high = cache_data['high'].iloc[-1]
-                            leg_ref = legs[1]['end_value'] if len(legs) > 1 else cache_data['low'].iloc[-5:].min()
+                            leg_ref = legs[1]['end_value'] if (len(legs) > 1) else cache_data['low'].iloc[-5:].min()
                             state.fib_levels = build_oriented_fib('bullish', recent_high, leg_ref)
                             raw_stop_90 = state.fib_levels.get('0.9')
                             raw_stop_100 = state.fib_levels.get('1.0')
                             candidates = [s for s in [raw_stop_90, raw_stop_100] if s is not None and s < current_open_point]
+                            log(f'After reorient BUY fib -> 0.9={raw_stop_90}, 1.0={raw_stop_100}, candidates={candidates}', color='lightcyan_ex')
                         if not candidates:
-                            log(f'❌ No valid STOP below entry after reorientation (0.9={raw_stop_90}, 1.0={raw_stop_100}, entry={current_open_point})', color='red')
+                            log(f'❌ No valid STOP below entry after reorientation (entry={current_open_point})', color='red')
+                            state.reset()
+
+                    if candidates and state.fib_levels:
+                        stop = max(candidates)  # نزدیک‌ترین استاپ زیر ورود
+                        log(f'stop (validated) = {stop}', color='blue')
+
+                        stop_distance = abs(current_open_point - stop)
+                        log(f'stop_distance={stop_distance:.5f} ({stop_distance*10000:.2f} pips)', color='lightyellow_ex')
+                        if stop_distance * 10000 < 1:
+                            log(f'❌ Stop distance too tight ({stop_distance*10000:.2f} pips) -> skip', color='red')
                             state.reset()
                         else:
-                            # proceed (rest unchanged)
-                            # نزدیک‌ترین استاپ زیر قیمت ورود
-                            stop = max(candidates)  # کمترین فاصله (محافظه‌کارانه‌تر)
-                            log(f'stop (validated) = {stop}', color='red')
-
-                            stop_distance = abs(current_open_point - stop)
-                            if stop_distance * 10000 < 1:
-                                log(f'❌ Stop distance too tight ({stop_distance:.5f}) -> skip', color='red')
+                            reward_end = current_open_point + (stop_distance * win_ratio)
+                            if reward_end <= current_open_point:
+                                log(f'❌ Invalid TP (reward_end <= entry) -> skip', color='red')
                                 state.reset()
                             else:
-                                reward_end = current_open_point + (stop_distance * win_ratio)
-                                if reward_end <= current_open_point:
-                                    log(f'❌ Invalid TP computed (reward_end <= entry) -> skip', color='red')
-                                    state.reset()
+                                log(f'stop = {stop}', color='green')
+                                log(f'reward_end = {reward_end}', color='green')
+
+                                result = mt5_conn.open_buy_position(
+                                    price=current_open_point,
+                                    sl=stop,
+                                    tp=reward_end,
+                                    comment=f"Bullish Swing {swing_type}"
+                                )
+
+                                if result and getattr(result, 'retcode', None) == 10009:
+                                    log(f'✅ BUY order executed successfully', color='green')
+                                    log(f'📊 Ticket={result.order} Price={result.price} Volume={result.volume}', color='cyan')
                                 else:
-                                    log(f'stop = {stop}', color='green')
-                                    log(f'reward_end = {reward_end}', color='green')
-
-                                    result = mt5_conn.open_buy_position(
-                                        price=current_open_point,
-                                        sl=stop,
-                                        tp=reward_end,
-                                        comment=f"Bullish Swing {swing_type}"
-                                    )
-
-                                    if result and getattr(result, 'retcode', None) == 10009:
-                                        log(f'✅ BUY order executed successfully', color='green')
-                                        log(f'📊 Ticket={result.order} Price={result.price} Volume={result.volume}', color='cyan')
+                                    if result:
+                                        log(f'❌ BUY failed retcode={result.retcode} comment={result.comment}', color='red')
                                     else:
-                                        if result:
-                                            log(f'❌ BUY failed retcode={result.retcode} comment={result.comment}', color='red')
-                                        else:
-                                            log(f'❌ BUY failed (no result object)', color='red')
-
-                                # بعد از تلاش معامله چه موفق چه ناموفق ریست
+                                        log(f'❌ BUY failed (no result object)', color='red')
                                 state.reset()
 
+                    # اصلاح reset مشابه SELL
+                    legs_before = legs[:] if 'legs' in locals() else []
                     legs = []
-                    start_index = cache_data.index.tolist().index(cache_data.iloc[-1].name)
-                    log(f'End long position, start_index: {start_index}', color='black')
+                    if legs_before:
+                        last_leg_start = legs_before[-1]['start']
+                        start_index = cache_data.index.tolist().index(last_leg_start)
+                    else:
+                        start_index = max(0, len(cache_data) - window_size)
+                    log(f'End long position, new start_index: {start_index}', color='black')
 
                 if state.true_position and (last_swing_type == 'bearish' or swing_type == 'bearish'):
                     current_open_point = cache_data.iloc[-1]['close']
                     log(f'Start short position income {cache_data.iloc[-1].name}', color='red')
                     log(f'current_open_point: {current_open_point}', color='red')
 
-                    raw_stop_90 = state.fib_levels.get('0.9')
-                    raw_stop_100 = state.fib_levels.get('1.0')
-                    # استاپ معتبر برای SELL باید بالای قیمت ورود باشد
+                    raw_stop_90 = state.fib_levels.get('0.9') if state.fib_levels else None
+                    raw_stop_100 = state.fib_levels.get('1.0') if state.fib_levels else None
                     candidates = [s for s in [raw_stop_90, raw_stop_100] if s is not None and s > current_open_point]
+                    log(f'SELL candidates (raw) -> 0.9={raw_stop_90}, 1.0={raw_stop_100}, chosen list={candidates}', color='lightcyan_ex')
 
                     if not candidates:
                         if state.fib_levels:
                             log('⚠️ No SELL stops above entry – retrying fib orientation', color='magenta')
                             recent_low = cache_data['low'].iloc[-1]
-                            leg_ref = legs[1]['end_value'] if len(legs) > 1 else cache_data['high'].iloc[-5:].max()
+                            leg_ref = legs[1]['end_value'] if (len(legs) > 1) else cache_data['high'].iloc[-5:].max()
                             state.fib_levels = build_oriented_fib('bearish', recent_low, leg_ref)
                             raw_stop_90 = state.fib_levels.get('0.9')
                             raw_stop_100 = state.fib_levels.get('1.0')
                             candidates = [s for s in [raw_stop_90, raw_stop_100] if s is not None and s > current_open_point]
+                            log(f'After reorient SELL fib -> 0.9={raw_stop_90}, 1.0={raw_stop_100}, candidates={candidates}', color='lightcyan_ex')
                         if not candidates:
-                            log(f'❌ No valid STOP above entry after reorientation (0.9={raw_stop_90}, 1.0={raw_stop_100}, entry={current_open_point})', color='red')
+                            log(f'❌ No valid STOP above entry after reorientation (entry={current_open_point})', color='red')
                             state.reset()
                         else:
-                            # proceed
-                            # نزدیک‌ترین استاپ بالای ورود
-                            stop = min(candidates)  # نزدیک‌ترین استاپ بالای ورود
-                            log(f'stop (validated) = {stop}', color='red')
+                            # continue to place order (fall through)
+                            pass
 
-                            stop_distance = abs(current_open_point - stop)
-                            if stop_distance * 10000 < 1:
-                                log(f'❌ Stop distance too tight ({stop_distance:.5f}) -> skip', color='red')
+                    if candidates:
+                        stop = min(candidates)  # نزدیک‌ترین استاپ بالای ورود
+                        log(f'stop (validated) = {stop}', color='red')
+
+                        stop_distance = abs(current_open_point - stop)
+                        log(f'stop_distance={stop_distance:.5f} ({stop_distance*10000:.2f} pips)', color='lightyellow_ex')
+                        if stop_distance * 10000 < 1:
+                            log(f'❌ Stop distance too tight ({stop_distance*10000:.2f} pips) -> skip', color='red')
+                            state.reset()
+                        else:
+                            reward_end = current_open_point - (stop_distance * win_ratio)
+                            if reward_end >= current_open_point:
+                                log(f'❌ Invalid TP (reward_end >= entry) -> skip', color='red')
                                 state.reset()
                             else:
-                                reward_end = current_open_point - (stop_distance * win_ratio)
-                                if reward_end >= current_open_point:
-                                    log(f'❌ Invalid TP computed (reward_end >= entry) -> skip', color='red')
-                                    state.reset()
+                                log(f'stop = {stop}', color='red')
+                                log(f'reward_end = {reward_end}', color='red')
+
+                                result = mt5_conn.open_sell_position(
+                                    price=current_open_point,
+                                    sl=stop,
+                                    tp=reward_end,
+                                    comment=f"Bearish Swing {swing_type}"
+                                )
+
+                                if result and getattr(result, 'retcode', None) == 10009:
+                                    log(f'✅ SELL order executed successfully', color='green')
+                                    log(f'📊 Ticket={result.order} Price={result.price} Volume={result.volume}', color='cyan')
                                 else:
-                                    log(f'stop = {stop}', color='red')
-                                    log(f'reward_end = {reward_end}', color='red')
-
-                                    result = mt5_conn.open_sell_position(
-                                        price=current_open_point,
-                                        sl=stop,
-                                        tp=reward_end,
-                                        comment=f"Bearish Swing {swing_type}"
-                                    )
-
-                                    if result and getattr(result, 'retcode', None) == 10009:
-                                        log(f'✅ SELL order executed successfully', color='green')
-                                        log(f'📊 Ticket={result.order} Price={result.price} Volume={result.volume}', color='cyan')
+                                    if result:
+                                        log(f'❌ SELL failed retcode={result.retcode} comment={result.comment}', color='red')
                                     else:
-                                        if result:
-                                            log(f'❌ SELL failed retcode={result.retcode} comment={result.comment}', color='red')
-                                        else:
-                                            log(f'❌ SELL failed (no result object)', color='red')
-
+                                        log(f'❌ SELL failed (no result object)', color='red')
                                 state.reset()
 
+                    # اصلاح reset legs و start_index
+                    # قبلا: legs = [] سپس start_index = اندیس آخر -> موجب شد همیشه len(legs)=0 بماند
+                    legs_before = legs[:] if 'legs' in locals() else []
                     legs = []
-                    start_index = cache_data.index.tolist().index(cache_data.iloc[-1].name)
-                    log(f'End short position, start_index: {start_index}', color='black')
+                    if legs_before:
+                        # شروع را به ابتدای آخرین leg کامل (یا 2 کندل قبل) برگردان
+                        last_leg_start = legs_before[-1]['start']
+                        start_index = cache_data.index.tolist().index(last_leg_start)
+                    else:
+                        # بازسازی از آخر window_size کندل
+                        start_index = max(0, len(cache_data) - window_size)
+                    log(f'End short position, new start_index: {start_index}', color='black')
                 
                 log(f'cache_data.iloc[-1].name: {cache_data.iloc[-1].name}', color='lightblue_ex')
                 log(f'len(legs): {len(legs)} | start_index: {start_index} | {cache_data.iloc[start_index].name}', color='lightred_ex')
