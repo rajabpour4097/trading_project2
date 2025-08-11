@@ -12,22 +12,6 @@ from utils import BotState
 from save_file import log
 from metatrader5_config import MT5_CONFIG, TRADING_CONFIG
 
-def build_oriented_fib(direction: str, a: float, b: float):
-    """
-    Ensure fib orientation:
-      bullish: 0.0 = high, 1.0 = low  (retracement downward)
-      bearish: 0.0 = low,  1.0 = high (retracement upward)
-    a, b are two price refs (recent extreme and prior leg end)
-    """
-    hi = max(a, b)
-    lo = min(a, b)
-    if direction == 'bullish':
-        start_price = hi     # fib 0.0 (highest)
-        end_price = lo       # fib 1.0 (lowest)
-    else:  # bearish
-        start_price = lo     # fib 0.0 (lowest)
-        end_price = hi       # fib 1.0 (highest)
-    return fibonacci_retracement(start_price=start_price, end_price=end_price)
 
 def main():
     # راه‌اندازی MT5 و colorama
@@ -159,59 +143,53 @@ def main():
                             last_swing_type = swing_type
                             if swing_type == 'bullish':
                                 if cache_data.iloc[-1]['close'] >= legs[0]['end_value']:
-                                    start_price = cache_data.iloc[-1]['high']  #fib0
-                                    end_price = legs[1]['end_value']  #fib1
-                                    
+                                    # دقیقا مثل main_saver_copy2.py
+                                    start_price = cache_data.iloc[-1]['high']
+                                    end_price = legs[1]['end_value']
                                     if cache_data.iloc[-1]['high'] >= legs[1]['end_value']:
                                         log(f'The {f} of fib_levels value code:4116455 {cache_data.iloc[-1].name}', color='green')
-                                        state.fib_levels = build_oriented_fib('bullish', start_price, end_price)
+                                        state.fib_levels = fibonacci_retracement(end_price=end_price, start_price=start_price)
                                         fib0_point = cache_data.index.tolist().index(cache_data.iloc[-1].name)
                                         fib_index = cache_data.iloc[-1].name
                                         last_leg1_value = cache_data.index.tolist().index(legs[1]['end'])
                                         legs = legs[-2:]
                                         f += 1
-                                    
                                     elif state.fib_levels and cache_data.iloc[-1]['low'] < state.fib_levels['1.0']:
                                         state.reset()
                                         legs = legs[-2:]
                                         start_index = cache_data.index.tolist().index(legs[0]['start'])
-
                                     if state.fib_levels:
                                         log(f'fib_levels: {state.fib_levels}', color='yellow')
                                         log(f'fib_index: {fib_index}', color='yellow')
-
                             elif swing_type == 'bearish':
                                 if cache_data.iloc[-1]['close'] <= legs[0]['end_value']:
-                                    start_price = cache_data.iloc[-1]['low']  #fib0
-                                    end_price = legs[1]['end_value']  #fib1
-                                    
+                                    start_price = cache_data.iloc[-1]['low']
+                                    end_price = legs[1]['end_value']
                                     if cache_data.iloc[-1]['low'] <= legs[1]['end_value']:
                                         log(f'The {f} of fib_levels value code:4126455 {cache_data.iloc[-1].name}', color='green')
-                                        state.fib_levels = build_oriented_fib('bearish', start_price, end_price)
+                                        state.fib_levels = fibonacci_retracement(start_price=start_price, end_price=end_price)
                                         fib0_point = cache_data.index.tolist().index(cache_data.iloc[-1].name)
                                         fib_index = cache_data.iloc[-1].name
                                         last_leg1_value = cache_data.index.tolist().index(legs[1]['end'])
                                         legs = legs[-2:]
                                         f += 1
-                                    
                                     elif state.fib_levels and cache_data.iloc[-1]['high'] > state.fib_levels['1.0']:
                                         state.reset()
                                         legs = legs[-2:]
                                         start_index = cache_data.index.tolist().index(legs[0]['start'])
-                                    
                                     if state.fib_levels:
                                         log(f'fib_levels: {state.fib_levels}', color='yellow')
                                         log(f'fib_index: {fib_index}', color='yellow')
-                        
+
                         # فاز 2: به‌روزرسانی در swing مشابه - تنها در صورت یکسان بودن جهت
                         elif is_swing and state.fib_levels and last_swing_type == swing_type: 
                             log(f'is_swing and state.fib_levels and last_swing_type == swing_type code:4213312', color='yellow')
                             if swing_type == 'bullish': 
                                 if cache_data.iloc[-1]['high'] >= legs[1]['end_value']:
                                     log(f'The {f} of fib_levels value update code:9916455 {cache_data.iloc[-1].name}', color='green')
-                                    start_price = cache_data.iloc[-1]['high']  #fib0
-                                    end_price = legs[1]['end_value']  #fib1
-                                    state.fib_levels = build_oriented_fib('bullish', start_price, end_price)
+                                    start_price = cache_data.iloc[-1]['high']
+                                    end_price = legs[1]['end_value']
+                                    state.fib_levels = fibonacci_retracement(start_price=start_price, end_price=end_price)
                                     fib0_point = cache_data.index.tolist().index(cache_data.iloc[-1].name)
                                     fib_index = cache_data.iloc[-1].name
                                     last_leg1_value = cache_data.index.tolist().index(legs[1]['end'])
@@ -225,15 +203,15 @@ def main():
                                         log(f'Second touch 705 point code:7218455 {cache_data.iloc[-1].name}', color='green')
                                         state.true_position = True      
                                 elif state.fib_levels and cache_data.iloc[-1]['low'] < state.fib_levels['1.0']:
-                                        state.reset()
-                                        legs = legs[-2:]
-                                        start_index = cache_data.index.tolist().index(legs[0]['start'])
+                                    state.reset()
+                                    legs = legs[-2:]
+                                    start_index = cache_data.index.tolist().index(legs[0]['start'])
                             elif swing_type == 'bearish':
                                 if cache_data.iloc[-1]['low'] <= legs[1]['end_value']:
                                     log(f'The {f} of fib_levels value update code:9916455 {cache_data.iloc[-1].name}', color='green')
-                                    start_price = cache_data.iloc[-1]['low']  #fib0
-                                    end_price = legs[1]['end_value']  #fib1
-                                    state.fib_levels = build_oriented_fib('bearish', start_price, end_price)
+                                    start_price = cache_data.iloc[-1]['low']
+                                    end_price = legs[1]['end_value']
+                                    state.fib_levels = fibonacci_retracement(start_price=start_price, end_price=end_price)
                                     fib0_point = cache_data.index.tolist().index(cache_data.iloc[-1].name)
                                     fib_index = cache_data.iloc[-1].name
                                     last_leg1_value = cache_data.index.tolist().index(legs[1]['end'])
@@ -247,26 +225,21 @@ def main():
                                         log(f'Second touch 705 point code:6228455 {cache_data.iloc[-1].name}', color='green')
                                         state.true_position = True
                                 elif state.fib_levels and cache_data.iloc[-1]['high'] > state.fib_levels['1.0']:
-                                        state.reset()
-                                        legs = legs[-2:]
-                                        start_index = cache_data.index.tolist().index(legs[0]['start'])
+                                    state.reset()
+                                    legs = legs[-2:]
+                                    start_index = cache_data.index.tolist().index(legs[0]['start'])
 
                         # فاز جدید: مدیریت swing معکوس بدون عبور از fib 1.0
                         elif is_swing and state.fib_levels and last_swing_type != swing_type:
                             log(f'is_swing with opposite direction - checking fib 1.0 violation', color='orange')
-                            
-                            # اگر swing معکوس است، فقط در صورت عبور از fib 1.0 ریست کنیم
                             if last_swing_type == 'bullish' and swing_type == 'bearish':
                                 if cache_data.iloc[-1]['low'] < state.fib_levels['1.0']:
                                     log(f'Bearish swing violated fib 1.0 - resetting', color='red')
                                     state.reset()
                                     legs = legs[-3:]
                                     start_index = cache_data.index.tolist().index(legs[0]['start'])
-                                    
                                 else:
                                     log(f'Bearish swing within fib range - ignoring', color='yellow')
-                                    # نادیده گرفتن این swing و ادامه با fib قبلی
-                                    
                             elif last_swing_type == 'bearish' and swing_type == 'bullish':
                                 if cache_data.iloc[-1]['high'] > state.fib_levels['1.0']:
                                     log(f'Bullish swing violated fib 1.0 - resetting', color='red')
@@ -277,14 +250,12 @@ def main():
                                     log(f'Bullish swing within fib range - ignoring', color='yellow')
 
                         elif is_swing == False and state.fib_levels:
-                            
                             if last_swing_type == 'bullish':
-                                start_price = cache_data.iloc[-1]['high']  #fib0
-                                end_price = legs[1]['end_value']  #fib1
+                                start_price = cache_data.iloc[-1]['high']
+                                end_price = legs[1]['end_value']
                                 if state.fib_levels['0.0'] < cache_data.iloc[-1]['high']:
                                     log(f'update fib_levels value code:7117455 {cache_data.iloc[-1].name}', color='green')
-                                    start_price = cache_data.iloc[-1]['high']
-                                    state.fib_levels = build_oriented_fib('bullish', start_price, end_price)
+                                    state.fib_levels = fibonacci_retracement(start_price=start_price, end_price=end_price)
                                     fib0_point = cache_data.index.tolist().index(cache_data.iloc[-1].name)
                                     fib_index = cache_data.iloc[-1].name
                                 elif cache_data.iloc[-1]['low'] <= state.fib_levels['0.705']:
@@ -295,17 +266,15 @@ def main():
                                         log(f'Second touch 705 point code:7218455 {cache_data.iloc[-1].name}', color='green')
                                         state.true_position = True      
                                 elif state.fib_levels and cache_data.iloc[-1]['low'] < state.fib_levels['1.0']:
-                                        state.reset()
-                                        legs = legs[-2:]
-                                        start_index = cache_data.index.tolist().index(legs[0]['start'])                         
-
+                                    state.reset()
+                                    legs = legs[-2:]
+                                    start_index = cache_data.index.tolist().index(legs[0]['start'])
                             if last_swing_type == 'bearish':
-                                start_price = cache_data.iloc[-1]['low']  #fib0
-                                end_price = legs[1]['end_value']  #fib1
+                                start_price = cache_data.iloc[-1]['low']
+                                end_price = legs[1]['end_value']
                                 if state.fib_levels['0.0'] > cache_data.iloc[-1]['low']:
                                     log(f'update fib_levels value code:6127455 {cache_data.iloc[-1].name}', color='green')
-                                    start_price = cache_data.iloc[-1]['low']
-                                    state.fib_levels = build_oriented_fib('bearish', start_price, end_price)
+                                    state.fib_levels = fibonacci_retracement(start_price=start_price, end_price=end_price)
                                     fib0_point = cache_data.index.tolist().index(cache_data.iloc[-1].name)
                                     fib_index = cache_data.iloc[-1].name
                                 elif cache_data.iloc[-1]['high'] >= state.fib_levels['0.705']:
@@ -316,21 +285,19 @@ def main():
                                         log(f'Second touch 705 point code:6228455 {cache_data.iloc[-1].name}', color='green')
                                         state.true_position = True
                                 elif state.fib_levels and cache_data.iloc[-1]['high'] > state.fib_levels['1.0']:
-                                        state.reset()
-                                        legs = legs[-2:]
-                                        start_index = cache_data.index.tolist().index(legs[0]['start'])
-                                        
-                # len legs <= 2
+                                    state.reset()
+                                    legs = legs[-2:]
+                                    start_index = cache_data.index.tolist().index(legs[0]['start'])
+
                 elif len(legs) < 3:
                     if state.fib_levels:
                         if last_swing_type == 'bullish' or swing_type == 'bullish':
                             if state.fib_levels['0.0'] < cache_data.iloc[-1]['high']:
                                 log(f'update fib_levels value code:5117455 {cache_data.iloc[-1].name}', color='green')
                                 start_price = cache_data.iloc[-1]['high']
-                                state.fib_levels = build_oriented_fib('bullish', start_price, end_price)
+                                state.fib_levels = fibonacci_retracement(start_price=start_price, end_price=end_price)
                                 fib0_point = cache_data.index.tolist().index(cache_data.iloc[-1].name)
                                 fib_index = cache_data.iloc[-1].name
-                            
                             elif cache_data.iloc[-1]['low'] <= state.fib_levels['0.705']:
                                 if state.last_touched_705_point_up is None:
                                     log(f'first touch 705 point', color='green')
@@ -338,15 +305,13 @@ def main():
                                 elif cache_data.iloc[-1]['status'] != state.last_touched_705_point_up['status']:
                                     log(f'Second touch 705 point code:4118455 {cache_data.iloc[-1].name}', color='green')
                                     state.true_position = True                               
-
                         if last_swing_type == 'bearish' or swing_type == 'bearish':
                             if state.fib_levels['0.0'] > cache_data.iloc[-1]['low']:
                                 log(f'update fib_levels value code:5127455 {cache_data.iloc[-1].name}', color='green')
                                 start_price = cache_data.iloc[-1]['low']
-                                state.fib_levels = build_oriented_fib('bearish', start_price, end_price)
+                                state.fib_levels = fibonacci_retracement(start_price=start_price, end_price=end_price)
                                 fib0_point = cache_data.index.tolist().index(cache_data.iloc[-1].name)
                                 fib_index = cache_data.iloc[-1].name
-                            
                             elif cache_data.iloc[-1]['high'] >= state.fib_levels['0.705']:
                                 if state.last_touched_705_point_down is None:
                                     log(f'first touch 705 point', color='red')
@@ -359,67 +324,45 @@ def main():
                     if len(legs) == 1:
                         log(f'leg0: {legs[0]["start"]}, {legs[0]["end"]}', color='lightcyan_ex')
                 
-                # بخش معاملات - sell and buy statement
+                # بخش معاملات - buy statement (مطابق منطق main_saver_copy2.py)
                 if state.true_position and (last_swing_type == 'bullish' or swing_type == 'bullish'):
-                    current_open_point = cache_data.iloc[-1]['close']
+                    last_tick = mt5.symbol_info_tick(MT5_CONFIG['symbol'])
+                    buy_entry_price = last_tick.ask  # برای BUY از ask استفاده کن
+                    # دریافت قیمت لحظه‌ای بازار از MT5
+                    # current_open_point = cache_data.iloc[-1]['close']
                     log(f'Start long position income {cache_data.iloc[-1].name}', color='blue')
-                    log(f'current_open_point: {current_open_point}', color='blue')
+                    log(f'current_open_point (market ask): {buy_entry_price}', color='blue')
 
-                    raw_stop_90 = state.fib_levels.get('0.9') if state.fib_levels else None
-                    raw_stop_100 = state.fib_levels.get('1.0') if state.fib_levels else None
-                    candidates = [s for s in [raw_stop_90, raw_stop_100] if s is not None and s < current_open_point]
-                    log(f'BUY candidates (raw) -> 0.9={raw_stop_90}, 1.0={raw_stop_100}, chosen list={candidates}', color='lightcyan_ex')
+                    # تعیین stop بر اساس فاصله فیب، هرچی بود وارد معامله شو
+                    if abs(state.fib_levels['0.9'] - buy_entry_price) * 10000 < 2:
+                        stop = state.fib_levels['1.0']
+                        log(f'stop = fib_levels[1.0] {stop}', color='red')
+                    else:
+                        stop = state.fib_levels['0.9']
+                        log(f'stop = fib_levels[0.9] {stop}', color='red')
+                    stop_distance = abs(buy_entry_price - stop)
+                    reward_end = buy_entry_price + (stop_distance * win_ratio)
+                    log(f'stop = {stop}', color='green')
+                    log(f'reward_end = {reward_end}', color='green')
 
-                    if not candidates:
-                        if state.fib_levels:
-                            log('⚠️ No BUY stops below entry – retrying fib orientation', color='magenta')
-                            recent_high = cache_data['high'].iloc[-1]
-                            leg_ref = legs[1]['end_value'] if (len(legs) > 1) else cache_data['low'].iloc[-5:].min()
-                            state.fib_levels = build_oriented_fib('bullish', recent_high, leg_ref)
-                            raw_stop_90 = state.fib_levels.get('0.9')
-                            raw_stop_100 = state.fib_levels.get('1.0')
-                            candidates = [s for s in [raw_stop_90, raw_stop_100] if s is not None and s < current_open_point]
-                            log(f'After reorient BUY fib -> 0.9={raw_stop_90}, 1.0={raw_stop_100}, candidates={candidates}', color='lightcyan_ex')
-                        if not candidates:
-                            log(f'❌ No valid STOP below entry after reorientation (entry={current_open_point})', color='red')
-                            state.reset()
+                    # ارسال سفارش BUY با هر stop و reward
+                    result = mt5_conn.open_buy_position(
+                        tick=last_tick,
+                        sl=stop,
+                        tp=reward_end,
+                        comment=f"Bullish Swing {swing_type}"
+                    )
 
-                    if candidates and state.fib_levels:
-                        stop = max(candidates)  # نزدیک‌ترین استاپ زیر ورود
-                        log(f'stop (validated) = {stop}', color='blue')
-
-                        stop_distance = abs(current_open_point - stop)
-                        log(f'stop_distance={stop_distance:.5f} ({stop_distance*10000:.2f} pips)', color='lightyellow_ex')
-                        if stop_distance * 10000 < 1:
-                            log(f'❌ Stop distance too tight ({stop_distance*10000:.2f} pips) -> skip', color='red')
-                            state.reset()
+                    if result and getattr(result, 'retcode', None) == 10009:
+                        log(f'✅ BUY order executed successfully', color='green')
+                        log(f'📊 Ticket={result.order} Price={result.price} Volume={result.volume}', color='cyan')
+                    else:
+                        if result:
+                            log(f'❌ BUY failed retcode={result.retcode} comment={result.comment}', color='red')
                         else:
-                            reward_end = current_open_point + (stop_distance * win_ratio)
-                            if reward_end <= current_open_point:
-                                log(f'❌ Invalid TP (reward_end <= entry) -> skip', color='red')
-                                state.reset()
-                            else:
-                                log(f'stop = {stop}', color='green')
-                                log(f'reward_end = {reward_end}', color='green')
+                            log(f'❌ BUY failed (no result object)', color='red')
+                    state.reset()
 
-                                result = mt5_conn.open_buy_position(
-                                    price=current_open_point,
-                                    sl=stop,
-                                    tp=reward_end,
-                                    comment=f"Bullish Swing {swing_type}"
-                                )
-
-                                if result and getattr(result, 'retcode', None) == 10009:
-                                    log(f'✅ BUY order executed successfully', color='green')
-                                    log(f'📊 Ticket={result.order} Price={result.price} Volume={result.volume}', color='cyan')
-                                else:
-                                    if result:
-                                        log(f'❌ BUY failed retcode={result.retcode} comment={result.comment}', color='red')
-                                    else:
-                                        log(f'❌ BUY failed (no result object)', color='red')
-                                state.reset()
-
-                    # اصلاح reset مشابه SELL
                     legs_before = legs[:] if 'legs' in locals() else []
                     legs = []
                     if legs_before:
@@ -429,78 +372,51 @@ def main():
                         start_index = max(0, len(cache_data) - window_size)
                     log(f'End long position, new start_index: {start_index}', color='black')
 
+                # بخش معاملات - sell statement (مطابق منطق main_saver_copy2.py)
                 if state.true_position and (last_swing_type == 'bearish' or swing_type == 'bearish'):
-                    current_open_point = cache_data.iloc[-1]['close']
+                    
+                    last_tick = mt5.symbol_info_tick(MT5_CONFIG['symbol'])
+                    sell_entry_price = last_tick.bid
+
                     log(f'Start short position income {cache_data.iloc[-1].name}', color='red')
-                    log(f'current_open_point: {current_open_point}', color='red')
+                    log(f'current_open_point (market bid): {sell_entry_price}', color='red')
 
-                    raw_stop_90 = state.fib_levels.get('0.9') if state.fib_levels else None
-                    raw_stop_100 = state.fib_levels.get('1.0') if state.fib_levels else None
-                    candidates = [s for s in [raw_stop_90, raw_stop_100] if s is not None and s > current_open_point]
-                    log(f'SELL candidates (raw) -> 0.9={raw_stop_90}, 1.0={raw_stop_100}, chosen list={candidates}', color='lightcyan_ex')
+                    # تعیین stop بر اساس فاصله فیب، هرچی بود وارد معامله شو
+                    if abs(state.fib_levels['0.9'] - sell_entry_price) * 10000 < 2:
+                        stop = state.fib_levels['1.0']
+                        log(f'stop = fib_levels[1.0] {stop}', color='red')
+                    else:
+                        stop = state.fib_levels['0.9']
+                        log(f'stop = fib_levels[0.9] {stop}', color='red')
+                    stop_distance = abs(sell_entry_price - stop)
+                    reward_end = sell_entry_price - (stop_distance * win_ratio)
+                    log(f'stop = {stop}', color='red')
+                    log(f'reward_end = {reward_end}', color='red')
 
-                    if not candidates:
-                        if state.fib_levels:
-                            log('⚠️ No SELL stops above entry – retrying fib orientation', color='magenta')
-                            recent_low = cache_data['low'].iloc[-1]
-                            leg_ref = legs[1]['end_value'] if (len(legs) > 1) else cache_data['high'].iloc[-5:].max()
-                            state.fib_levels = build_oriented_fib('bearish', recent_low, leg_ref)
-                            raw_stop_90 = state.fib_levels.get('0.9')
-                            raw_stop_100 = state.fib_levels.get('1.0')
-                            candidates = [s for s in [raw_stop_90, raw_stop_100] if s is not None and s > current_open_point]
-                            log(f'After reorient SELL fib -> 0.9={raw_stop_90}, 1.0={raw_stop_100}, candidates={candidates}', color='lightcyan_ex')
-                        if not candidates:
-                            log(f'❌ No valid STOP above entry after reorientation (entry={current_open_point})', color='red')
-                            state.reset()
+                    # ارسال سفارش SELL با هر stop و reward
+                    result = mt5_conn.open_sell_position(
+                        bid=last_tick,
+                        sl=stop,
+                        tp=reward_end,
+                        comment=f"Bearish Swing {swing_type}"
+                    )
+
+                    if result and getattr(result, 'retcode', None) == 10009:
+                        log(f'✅ SELL order executed successfully', color='green')
+                        log(f'📊 Ticket={result.order} Price={result.price} Volume={result.volume}', color='cyan')
+                    else:
+                        if result:
+                            log(f'❌ SELL failed retcode={result.retcode} comment={result.comment}', color='red')
                         else:
-                            # continue to place order (fall through)
-                            pass
+                            log(f'❌ SELL failed (no result object)', color='red')
+                    state.reset()
 
-                    if candidates:
-                        stop = min(candidates)  # نزدیک‌ترین استاپ بالای ورود
-                        log(f'stop (validated) = {stop}', color='red')
-
-                        stop_distance = abs(current_open_point - stop)
-                        log(f'stop_distance={stop_distance:.5f} ({stop_distance*10000:.2f} pips)', color='lightyellow_ex')
-                        if stop_distance * 10000 < 1:
-                            log(f'❌ Stop distance too tight ({stop_distance*10000:.2f} pips) -> skip', color='red')
-                            state.reset()
-                        else:
-                            reward_end = current_open_point - (stop_distance * win_ratio)
-                            if reward_end >= current_open_point:
-                                log(f'❌ Invalid TP (reward_end >= entry) -> skip', color='red')
-                                state.reset()
-                            else:
-                                log(f'stop = {stop}', color='red')
-                                log(f'reward_end = {reward_end}', color='red')
-
-                                result = mt5_conn.open_sell_position(
-                                    price=current_open_point,
-                                    sl=stop,
-                                    tp=reward_end,
-                                    comment=f"Bearish Swing {swing_type}"
-                                )
-
-                                if result and getattr(result, 'retcode', None) == 10009:
-                                    log(f'✅ SELL order executed successfully', color='green')
-                                    log(f'📊 Ticket={result.order} Price={result.price} Volume={result.volume}', color='cyan')
-                                else:
-                                    if result:
-                                        log(f'❌ SELL failed retcode={result.retcode} comment={result.comment}', color='red')
-                                    else:
-                                        log(f'❌ SELL failed (no result object)', color='red')
-                                state.reset()
-
-                    # اصلاح reset legs و start_index
-                    # قبلا: legs = [] سپس start_index = اندیس آخر -> موجب شد همیشه len(legs)=0 بماند
                     legs_before = legs[:] if 'legs' in locals() else []
                     legs = []
                     if legs_before:
-                        # شروع را به ابتدای آخرین leg کامل (یا 2 کندل قبل) برگردان
                         last_leg_start = legs_before[-1]['start']
                         start_index = cache_data.index.tolist().index(last_leg_start)
                     else:
-                        # بازسازی از آخر window_size کندل
                         start_index = max(0, len(cache_data) - window_size)
                     log(f'End short position, new start_index: {start_index}', color='black')
                 

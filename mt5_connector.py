@@ -214,13 +214,12 @@ class MT5Connector:
         
         return None
     
-    def open_sell_position(self, price, sl, tp, comment=""):
+    def open_sell_position(self, tick, sl, tp, comment=""):
         """باز کردن پوزیشن فروش با تست تمام filling modes"""
         iran_time = self.get_iran_time()
         comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
         
         # دریافت قیمت فعلی برای validation
-        tick = mt5.symbol_info_tick(self.symbol)
         if not tick:
             return None
         
@@ -257,13 +256,12 @@ class MT5Connector:
         
         return result
     
-    def open_buy_position(self, price, sl, tp, comment=""):
+    def open_buy_position(self, tick, sl, tp, comment=""):
         """باز کردن پوزیشن خرید با تست تمام filling modes"""
         iran_time = self.get_iran_time()
         comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
         
         # دریافت قیمت فعلی برای validation
-        tick = mt5.symbol_info_tick(self.symbol)
         if not tick:
             return None
         
@@ -285,7 +283,7 @@ class MT5Connector:
         print(f"📤 Sending BUY order:")
         print(f"   Symbol: {self.symbol}")
         print(f"   Volume: {self.lot}")
-        print(f"   Price: {tick.ask}")
+        print(f"   Price: {tick}")
         print(f"   SL: {sl}")
         print(f"   TP: {tp}")
         print(f"   Deviation: {self.deviation}")
