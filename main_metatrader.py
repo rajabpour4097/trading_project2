@@ -11,6 +11,7 @@ from swing import get_swing_points
 from utils import BotState
 from save_file import log
 from metatrader5_config import MT5_CONFIG, TRADING_CONFIG
+from email_notifier import send_trade_email_async
 
 
 def main():
@@ -395,12 +396,30 @@ def main():
 
                     # ارسال سفارش SELL با هر stop و reward
                     result = mt5_conn.open_sell_position(
-                        bid=last_tick,
+                        tick=last_tick,
                         sl=stop,
                         tp=reward_end,
                         comment=f"Bearish Swing {swing_type}"
                     )
-
+                    
+                    # ارسال ایمیل غیرمسدودکننده
+                    try:
+                        send_trade_email_async(
+                            subject=f"NEW SELL ORDER {MT5_CONFIG['symbol']}",
+                            body=(
+                                f"Time: {datetime.now()}\n"
+                                f"Symbol: {MT5_CONFIG['symbol']}\n"
+                                f"Type: SELL (Bearish Swing)\n"
+                                f"Entry: {sell_entry_price}\n"
+                                f"SL: {stop}\n"
+                                f"TP: {reward_end}\n"
+                                f"WinRatio: {win_ratio}\n"
+                                f"Retcode: {getattr(result,'retcode', 'NA')}\n"
+                            )
+                        )
+                    except Exception as _e:
+                        log(f'Email dispatch failed: {_e}', color='red')
+                    
                     if result and getattr(result, 'retcode', None) == 10009:
                         log(f'✅ SELL order executed successfully', color='green')
                         log(f'📊 Ticket={result.order} Price={result.price} Volume={result.volume}', color='cyan')

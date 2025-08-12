@@ -9,3 +9,5 @@ env/
 __pycache__/
 
 swing_logs.txt
+
+email_config.py
