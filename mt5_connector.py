@@ -385,6 +385,711 @@ class MT5Connector:
                 print("❌ Failed to make symbol visible")
     
     def calculate_valid_stops(self, entry_price, sl_price, tp_price, order_type):
+        """Validate & adjust SL/TP. Returns (sl, tp) or (None, None) on fatal error."""
+        symbol_info = mt5.symbol_info(self.symbol)
+        if not symbol_info:
+            print("❌ Symbol info not available")
+            return None, None
+
+        point = symbol_info.point
+        stops_level_points = symbol_info.trade_stops_level  # in points (broker terms)
+        min_distance = max(stops_level_points * point, 3 * point)  # ensure small practical floor
+
+        # Helper to round to proper tick
+        def norm(p):
+            digits = symbol_info.digits
+            return round(p, digits)
+
+        adjusted = False
+
+        if order_type == mt5.ORDER_TYPE_BUY:
+            # SL must be below, TP above
+            if sl_price is None or sl_price >= entry_price:
+                sl_price = entry_price - min_distance
+                adjusted = True
+            if tp_price is None or tp_price <= entry_price:
+                tp_price = entry_price + (entry_price - sl_price) * 1.2
+                adjusted = True
+
+            # Enforce minimum distances
+            if (entry_price - sl_price) < min_distance:
+                sl_price = entry_price - min_distance
+                adjusted = True
+            if (tp_price - entry_price) < min_distance:
+                tp_price = entry_price + min_distance
+                adjusted = True
+
+        elif order_type == mt5.ORDER_TYPE_SELL:
+            # SL must be above, TP below
+            if sl_price is None or sl_price <= entry_price:
+                sl_price = entry_price + min_distance
+                adjusted = True
+            if tp_price is None or tp_price >= entry_price:
+                tp_price = entry_price - (sl_price - entry_price) * 1.2
+                adjusted = True
+
+            # Enforce minimum distances
+            if (sl_price - entry_price) < min_distance:
+                sl_price = entry_price + min_distance
+                adjusted = True
+            if (entry_price - tp_price) < min_distance:
+                tp_price = entry_price - min_distance
+                adjusted = True
+        else:
+            print("⚠️ Unsupported order_type for stop validation")
+            return None, None
+
+        sl_price = norm(sl_price)
+        tp_price = norm(tp_price)
+
+        if adjusted:
+            print(f"🔧 Adjusted stops -> SL={sl_price} TP={tp_price} (min_distance={min_distance:.5f})")
+        else:
+            print(f"✅ Stops valid -> SL={sl_price} TP={tp_price}")
+
+        return sl_price, tp_price
+
+    def open_sell_position(self, tick, sl, tp, comment=""):
+        """Open SELL with validation & adaptive filling modes."""
+        iran_time = self.get_iran_time()
+        comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
+        if not tick:
+            print("❌ No tick data")
+            return None
+
+        entry_price = tick.bid
+        sl_adj, tp_adj = self.calculate_valid_stops(entry_price, sl, tp, mt5.ORDER_TYPE_SELL)
+        if sl_adj is None:
+            print("❌ Cannot compute valid stops")
+            return None
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": self.symbol,
+            "volume": self.lot,
+            "type": mt5.ORDER_TYPE_SELL,
+            "price": entry_price,
+            "sl": sl_adj,
+            "tp": tp_adj,
+            "deviation": self.deviation,
+            "magic": self.magic,
+            "comment": comment_with_time,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+
+        print(f"📤 Sending SELL order: Price={entry_price:.5f} SL={sl_adj:.5f} TP={tp_adj:.5f}")
+        result = self.try_all_filling_modes(request)
+
+        if result is None:
+            err = mt5.last_error()
+            print(f"❌ order_send returned None. last_error={err}")
+            return None
+
+        if result.retcode == 10009:
+            print(f"✅ SELL success ticket={result.order} deal={getattr(result,'deal', 'NA')}")
+        else:
+            print(f"❌ SELL failed retcode={result.retcode} comment={result.comment}")
+        return result
+    
+    def open_buy_position(self, tick, sl, tp, comment=""):
+        """باز کردن پوزیشن خرید با تست تمام filling modes"""
+        iran_time = self.get_iran_time()
+        comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
+        
+        # دریافت قیمت فعلی برای validation
+        if not tick:
+            return None
+        
+        # ساخت request اولیه
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": self.symbol,
+            "volume": self.lot,
+            "type": mt5.ORDER_TYPE_BUY,
+            "price": tick.ask,
+            "sl": sl,
+            "tp": tp,
+            "deviation": self.deviation,
+            "magic": self.magic,
+            "comment": comment_with_time,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+        
+        print(f"📤 Sending BUY order:")
+        print(f"   Symbol: {self.symbol}")
+        print(f"   Volume: {self.lot}")
+        print(f"   Price: {tick}")
+        print(f"   SL: {sl}")
+        print(f"   TP: {tp}")
+        print(f"   Deviation: {self.deviation}")
+        
+        # تست با تمام filling modes
+        result = self.try_all_filling_modes(request)
+        
+        if result and result.retcode == 10009:
+            print(f"✅ BUY order successful: ticket {result.order}")
+        else:
+            print(f"❌ All filling modes failed")
+        
+        return result
+    
+    def close_all_positions(self):
+        """بستن تمام پوزیشن‌ها"""
+        positions = mt5.positions_get(symbol=self.symbol)
+        if positions is None:
+            return
+            
+        for position in positions:
+            tick = mt5.symbol_info_tick(self.symbol)
+            
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": self.symbol,
+                "volume": position.volume,
+                "type": mt5.ORDER_TYPE_SELL if position.type == 0 else mt5.ORDER_TYPE_BUY,
+                "position": position.ticket,
+                "price": tick.bid if position.type == 0 else tick.ask,
+                "deviation": self.deviation,
+                "magic": self.magic,
+                "comment": "Close position",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            
+            mt5.order_send(request)
+    
+    def shutdown(self):
+        """قطع اتصال"""
+        mt5.shutdown()
+    
+    def check_trading_conditions(self):
+        """بررسی شرایط معاملاتی"""
+        # بررسی اتصال
+        if not mt5.terminal_info():
+            return False, "MT5 terminal not connected"
+        
+        # بررسی symbol
+        symbol_info = mt5.symbol_info(self.symbol)
+        if not symbol_info:
+            return False, f"Symbol {self.symbol} not found"
+        
+        if not symbol_info.visible:
+            mt5.symbol_select(self.symbol, True)
+        
+        # بررسی AutoTrading
+        terminal = mt5.terminal_info()
+        if not terminal.trade_allowed:
+            return False, "AutoTrading disabled in terminal"
+        
+        # بررسی حساب
+        account = mt5.account_info()
+        if not account:
+            return False, "Account info not available"
+        
+        if not account.trade_allowed:
+            return False, "Trading not allowed on account"
+        
+        return True, "All conditions OK"
+    
+    def check_symbol_properties(self):
+        """بررسی جزئیات symbol برای debugging"""
+        symbol_info = mt5.symbol_info(self.symbol)
+        if not symbol_info:
+            print(f"❌ Symbol {self.symbol} not found")
+            return
+        
+        print(f"📊 Symbol Properties for {self.symbol}:")
+        print(f"   Visible: {symbol_info.visible}")
+        print(f"   Select: {symbol_info.select}")
+        print(f"   Trade Mode: {symbol_info.trade_mode}")
+        print(f"   Trade Execution: {symbol_info.trade_exemode}")
+        print(f"   Filling Mode: {symbol_info.filling_mode}")
+        print(f"   Trade Stops Level: {symbol_info.trade_stops_level}")
+        print(f"   Volume Min: {symbol_info.volume_min}")
+        print(f"   Volume Max: {symbol_info.volume_max}")
+        print(f"   Volume Step: {symbol_info.volume_step}")
+        print(f"   Point: {symbol_info.point}")
+        print(f"   Digits: {symbol_info.digits}")
+        
+        # تنظیم symbol اگر visible نیست
+        if not symbol_info.visible:
+            print("🔧 Making symbol visible...")
+            if mt5.symbol_select(self.symbol, True):
+                print("✅ Symbol is now visible")
+            else:
+                print("❌ Failed to make symbol visible")
+    
+    def calculate_valid_stops(self, entry_price, sl_price, tp_price, order_type):
+        """Validate & adjust SL/TP. Returns (sl, tp) or (None, None) on fatal error."""
+        symbol_info = mt5.symbol_info(self.symbol)
+        if not symbol_info:
+            print("❌ Symbol info not available")
+            return None, None
+
+        point = symbol_info.point
+        stops_level_points = symbol_info.trade_stops_level  # in points (broker terms)
+        min_distance = max(stops_level_points * point, 3 * point)  # ensure small practical floor
+
+        # Helper to round to proper tick
+        def norm(p):
+            digits = symbol_info.digits
+            return round(p, digits)
+
+        adjusted = False
+
+        if order_type == mt5.ORDER_TYPE_BUY:
+            # SL must be below, TP above
+            if sl_price is None or sl_price >= entry_price:
+                sl_price = entry_price - min_distance
+                adjusted = True
+            if tp_price is None or tp_price <= entry_price:
+                tp_price = entry_price + (entry_price - sl_price) * 1.2
+                adjusted = True
+
+            # Enforce minimum distances
+            if (entry_price - sl_price) < min_distance:
+                sl_price = entry_price - min_distance
+                adjusted = True
+            if (tp_price - entry_price) < min_distance:
+                tp_price = entry_price + min_distance
+                adjusted = True
+
+        elif order_type == mt5.ORDER_TYPE_SELL:
+            # SL must be above, TP below
+            if sl_price is None or sl_price <= entry_price:
+                sl_price = entry_price + min_distance
+                adjusted = True
+            if tp_price is None or tp_price >= entry_price:
+                tp_price = entry_price - (sl_price - entry_price) * 1.2
+                adjusted = True
+
+            # Enforce minimum distances
+            if (sl_price - entry_price) < min_distance:
+                sl_price = entry_price + min_distance
+                adjusted = True
+            if (entry_price - tp_price) < min_distance:
+                tp_price = entry_price - min_distance
+                adjusted = True
+        else:
+            print("⚠️ Unsupported order_type for stop validation")
+            return None, None
+
+        sl_price = norm(sl_price)
+        tp_price = norm(tp_price)
+
+        if adjusted:
+            print(f"🔧 Adjusted stops -> SL={sl_price} TP={tp_price} (min_distance={min_distance:.5f})")
+        else:
+            print(f"✅ Stops valid -> SL={sl_price} TP={tp_price}")
+
+        return sl_price, tp_price
+
+    def open_sell_position(self, tick, sl, tp, comment=""):
+        """Open SELL with validation & adaptive filling modes."""
+        iran_time = self.get_iran_time()
+        comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
+        if not tick:
+            print("❌ No tick data")
+            return None
+
+        entry_price = tick.bid
+        sl_adj, tp_adj = self.calculate_valid_stops(entry_price, sl, tp, mt5.ORDER_TYPE_SELL)
+        if sl_adj is None:
+            print("❌ Cannot compute valid stops")
+            return None
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": self.symbol,
+            "volume": self.lot,
+            "type": mt5.ORDER_TYPE_SELL,
+            "price": entry_price,
+            "sl": sl_adj,
+            "tp": tp_adj,
+            "deviation": self.deviation,
+            "magic": self.magic,
+            "comment": comment_with_time,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+
+        print(f"📤 Sending SELL order: Price={entry_price:.5f} SL={sl_adj:.5f} TP={tp_adj:.5f}")
+        result = self.try_all_filling_modes(request)
+
+        if result is None:
+            err = mt5.last_error()
+            print(f"❌ order_send returned None. last_error={err}")
+            return None
+
+        if result.retcode == 10009:
+            print(f"✅ SELL success ticket={result.order} deal={getattr(result,'deal', 'NA')}")
+        else:
+            print(f"❌ SELL failed retcode={result.retcode} comment={result.comment}")
+        return result
+    
+    def open_buy_position(self, tick, sl, tp, comment=""):
+        """باز کردن پوزیشن خرید با تست تمام filling modes"""
+        iran_time = self.get_iran_time()
+        comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
+        
+        # دریافت قیمت فعلی برای validation
+        if not tick:
+            return None
+        
+        # ساخت request اولیه
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": self.symbol,
+            "volume": self.lot,
+            "type": mt5.ORDER_TYPE_BUY,
+            "price": tick.ask,
+            "sl": sl,
+            "tp": tp,
+            "deviation": self.deviation,
+            "magic": self.magic,
+            "comment": comment_with_time,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+        
+        print(f"📤 Sending BUY order:")
+        print(f"   Symbol: {self.symbol}")
+        print(f"   Volume: {self.lot}")
+        print(f"   Price: {tick}")
+        print(f"   SL: {sl}")
+        print(f"   TP: {tp}")
+        print(f"   Deviation: {self.deviation}")
+        
+        # تست با تمام filling modes
+        result = self.try_all_filling_modes(request)
+        
+        if result and result.retcode == 10009:
+            print(f"✅ BUY order successful: ticket {result.order}")
+        else:
+            print(f"❌ All filling modes failed")
+        
+        return result
+    
+    def close_all_positions(self):
+        """بستن تمام پوزیشن‌ها"""
+        positions = mt5.positions_get(symbol=self.symbol)
+        if positions is None:
+            return
+            
+        for position in positions:
+            tick = mt5.symbol_info_tick(self.symbol)
+            
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": self.symbol,
+                "volume": position.volume,
+                "type": mt5.ORDER_TYPE_SELL if position.type == 0 else mt5.ORDER_TYPE_BUY,
+                "position": position.ticket,
+                "price": tick.bid if position.type == 0 else tick.ask,
+                "deviation": self.deviation,
+                "magic": self.magic,
+                "comment": "Close position",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            
+            mt5.order_send(request)
+    
+    def shutdown(self):
+        """قطع اتصال"""
+        mt5.shutdown()
+    
+    def check_trading_conditions(self):
+        """بررسی شرایط معاملاتی"""
+        # بررسی اتصال
+        if not mt5.terminal_info():
+            return False, "MT5 terminal not connected"
+        
+        # بررسی symbol
+        symbol_info = mt5.symbol_info(self.symbol)
+        if not symbol_info:
+            return False, f"Symbol {self.symbol} not found"
+        
+        if not symbol_info.visible:
+            mt5.symbol_select(self.symbol, True)
+        
+        # بررسی AutoTrading
+        terminal = mt5.terminal_info()
+        if not terminal.trade_allowed:
+            return False, "AutoTrading disabled in terminal"
+        
+        # بررسی حساب
+        account = mt5.account_info()
+        if not account:
+            return False, "Account info not available"
+        
+        if not account.trade_allowed:
+            return False, "Trading not allowed on account"
+        
+        return True, "All conditions OK"
+    
+    def check_symbol_properties(self):
+        """بررسی جزئیات symbol برای debugging"""
+        symbol_info = mt5.symbol_info(self.symbol)
+        if not symbol_info:
+            print(f"❌ Symbol {self.symbol} not found")
+            return
+        
+        print(f"📊 Symbol Properties for {self.symbol}:")
+        print(f"   Visible: {symbol_info.visible}")
+        print(f"   Select: {symbol_info.select}")
+        print(f"   Trade Mode: {symbol_info.trade_mode}")
+        print(f"   Trade Execution: {symbol_info.trade_exemode}")
+        print(f"   Filling Mode: {symbol_info.filling_mode}")
+        print(f"   Trade Stops Level: {symbol_info.trade_stops_level}")
+        print(f"   Volume Min: {symbol_info.volume_min}")
+        print(f"   Volume Max: {symbol_info.volume_max}")
+        print(f"   Volume Step: {symbol_info.volume_step}")
+        print(f"   Point: {symbol_info.point}")
+        print(f"   Digits: {symbol_info.digits}")
+        
+        # تنظیم symbol اگر visible نیست
+        if not symbol_info.visible:
+            print("🔧 Making symbol visible...")
+            if mt5.symbol_select(self.symbol, True):
+                print("✅ Symbol is now visible")
+            else:
+                print("❌ Failed to make symbol visible")
+    
+    def calculate_valid_stops(self, entry_price, sl_price, tp_price, order_type):
+        """Validate & adjust SL/TP. Returns (sl, tp) or (None, None) on fatal error."""
+        symbol_info = mt5.symbol_info(self.symbol)
+        if not symbol_info:
+            print("❌ Symbol info not available")
+            return None, None
+
+        point = symbol_info.point
+        stops_level_points = symbol_info.trade_stops_level  # in points (broker terms)
+        min_distance = max(stops_level_points * point, 3 * point)  # ensure small practical floor
+
+        # Helper to round to proper tick
+        def norm(p):
+            digits = symbol_info.digits
+            return round(p, digits)
+
+        adjusted = False
+
+        if order_type == mt5.ORDER_TYPE_BUY:
+            # SL must be below, TP above
+            if sl_price is None or sl_price >= entry_price:
+                sl_price = entry_price - min_distance
+                adjusted = True
+            if tp_price is None or tp_price <= entry_price:
+                tp_price = entry_price + (entry_price - sl_price) * 1.2
+                adjusted = True
+
+            # Enforce minimum distances
+            if (entry_price - sl_price) < min_distance:
+                sl_price = entry_price - min_distance
+                adjusted = True
+            if (tp_price - entry_price) < min_distance:
+                tp_price = entry_price + min_distance
+                adjusted = True
+
+        elif order_type == mt5.ORDER_TYPE_SELL:
+            # SL must be above, TP below
+            if sl_price is None or sl_price <= entry_price:
+                sl_price = entry_price + min_distance
+                adjusted = True
+            if tp_price is None or tp_price >= entry_price:
+                tp_price = entry_price - (sl_price - entry_price) * 1.2
+                adjusted = True
+
+            # Enforce minimum distances
+            if (sl_price - entry_price) < min_distance:
+                sl_price = entry_price + min_distance
+                adjusted = True
+            if (entry_price - tp_price) < min_distance:
+                tp_price = entry_price - min_distance
+                adjusted = True
+        else:
+            print("⚠️ Unsupported order_type for stop validation")
+            return None, None
+
+        sl_price = norm(sl_price)
+        tp_price = norm(tp_price)
+
+        if adjusted:
+            print(f"🔧 Adjusted stops -> SL={sl_price} TP={tp_price} (min_distance={min_distance:.5f})")
+        else:
+            print(f"✅ Stops valid -> SL={sl_price} TP={tp_price}")
+
+        return sl_price, tp_price
+
+    def open_sell_position(self, tick, sl, tp, comment=""):
+        """Open SELL with validation & adaptive filling modes."""
+        iran_time = self.get_iran_time()
+        comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
+        if not tick:
+            print("❌ No tick data")
+            return None
+
+        entry_price = tick.bid
+        sl_adj, tp_adj = self.calculate_valid_stops(entry_price, sl, tp, mt5.ORDER_TYPE_SELL)
+        if sl_adj is None:
+            print("❌ Cannot compute valid stops")
+            return None
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": self.symbol,
+            "volume": self.lot,
+            "type": mt5.ORDER_TYPE_SELL,
+            "price": entry_price,
+            "sl": sl_adj,
+            "tp": tp_adj,
+            "deviation": self.deviation,
+            "magic": self.magic,
+            "comment": comment_with_time,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+
+        print(f"📤 Sending SELL order: Price={entry_price:.5f} SL={sl_adj:.5f} TP={tp_adj:.5f}")
+        result = self.try_all_filling_modes(request)
+
+        if result is None:
+            err = mt5.last_error()
+            print(f"❌ order_send returned None. last_error={err}")
+            return None
+
+        if result.retcode == 10009:
+            print(f"✅ SELL success ticket={result.order} deal={getattr(result,'deal', 'NA')}")
+        else:
+            print(f"❌ SELL failed retcode={result.retcode} comment={result.comment}")
+        return result
+    
+    def open_buy_position(self, tick, sl, tp, comment=""):
+        """باز کردن پوزیشن خرید با تست تمام filling modes"""
+        iran_time = self.get_iran_time()
+        comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
+        
+        # دریافت قیمت فعلی برای validation
+        if not tick:
+            return None
+        
+        # ساخت request اولیه
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": self.symbol,
+            "volume": self.lot,
+            "type": mt5.ORDER_TYPE_BUY,
+            "price": tick.ask,
+            "sl": sl,
+            "tp": tp,
+            "deviation": self.deviation,
+            "magic": self.magic,
+            "comment": comment_with_time,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+        
+        print(f"📤 Sending BUY order:")
+        print(f"   Symbol: {self.symbol}")
+        print(f"   Volume: {self.lot}")
+        print(f"   Price: {tick}")
+        print(f"   SL: {sl}")
+        print(f"   TP: {tp}")
+        print(f"   Deviation: {self.deviation}")
+        
+        # تست با تمام filling modes
+        result = self.try_all_filling_modes(request)
+        
+        if result and result.retcode == 10009:
+            print(f"✅ BUY order successful: ticket {result.order}")
+        else:
+            print(f"❌ All filling modes failed")
+        
+        return result
+    
+    def close_all_positions(self):
+        """بستن تمام پوزیشن‌ها"""
+        positions = mt5.positions_get(symbol=self.symbol)
+        if positions is None:
+            return
+            
+        for position in positions:
+            tick = mt5.symbol_info_tick(self.symbol)
+            
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": self.symbol,
+                "volume": position.volume,
+                "type": mt5.ORDER_TYPE_SELL if position.type == 0 else mt5.ORDER_TYPE_BUY,
+                "position": position.ticket,
+                "price": tick.bid if position.type == 0 else tick.ask,
+                "deviation": self.deviation,
+                "magic": self.magic,
+                "comment": "Close position",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            
+            mt5.order_send(request)
+    
+    def shutdown(self):
+        """قطع اتصال"""
+        mt5.shutdown()
+    
+    def check_trading_conditions(self):
+        """بررسی شرایط معاملاتی"""
+        # بررسی اتصال
+        if not mt5.terminal_info():
+            return False, "MT5 terminal not connected"
+        
+        # بررسی symbol
+        symbol_info = mt5.symbol_info(self.symbol)
+        if not symbol_info:
+            return False, f"Symbol {self.symbol} not found"
+        
+        if not symbol_info.visible:
+            mt5.symbol_select(self.symbol, True)
+        
+        # بررسی AutoTrading
+        terminal = mt5.terminal_info()
+        if not terminal.trade_allowed:
+            return False, "AutoTrading disabled in terminal"
+        
+        # بررسی حساب
+        account = mt5.account_info()
+        if not account:
+            return False, "Account info not available"
+        
+        if not account.trade_allowed:
+            return False, "Trading not allowed on account"
+        
+        return True, "All conditions OK"
+    
+    def check_symbol_properties(self):
+        """بررسی جزئیات symbol برای debugging"""
+        symbol_info = mt5.symbol_info(self.symbol)
+        if not symbol_info:
+            print(f"❌ Symbol {self.symbol} not found")
+            return
+        
+        print(f"📊 Symbol Properties for {self.symbol}:")
+        print(f"   Visible: {symbol_info.visible}")
+        print(f"   Select: {symbol_info.select}")
+        print(f"   Trade Mode: {symbol_info.trade_mode}")
+        print(f"   Trade Execution: {symbol_info.trade_exemode}")
+        print(f"   Filling Mode: {symbol_info.filling_mode}")
+        print(f"   Trade Stops Level: {symbol_info.trade_stops_level}")
+        print(f"   Volume Min: {symbol_info.volume_min}")
+        print(f"   Volume Max: {symbol_info.volume_max}")
+        print(f"   Volume Step: {symbol_info.volume_step}")
+        print(f"   Point: {symbol_info.point}")
+        print(f"   Digits: {symbol_info.digits}")
+        
+        # تنظیم symbol اگر visible نیست
+        if not symbol_info.visible:
+            print("🔧 Making symbol visible...")
+            if mt5.symbol_select(self.symbol, True):
+                print("✅ Symbol is now visible")
+            else:
+                print("❌ Failed to make symbol visible")
+    
+    def calculate_valid_stops(self, entry_price, sl_price, tp_price, order_type):
         """محاسبه و تنظیم SL/TP معتبر. برمی‌گرداند (sl_adjusted, tp_adjusted) یا None در خطای جدی."""
         symbol_info = mt5.symbol_info(self.symbol)
         if not symbol_info:

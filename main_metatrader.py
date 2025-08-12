@@ -65,6 +65,13 @@ def main():
     wait_count = 0
     max_wait_cycles = 120  # پس از 60 ثانیه (120 * 0.5) اجبار به پردازش
 
+    # بعد از تعریف متغیرها در main()
+    def reset_state_and_window():
+        nonlocal start_index
+        state.reset()
+        start_index = max(0, len(cache_data) - window_size)
+        log(f'Reset state -> new start_index={start_index} (slice len={len(cache_data.iloc[start_index:])})', color='magenta')
+
     while True:
         try:
             # بررسی ساعات معاملاتی
@@ -156,9 +163,8 @@ def main():
                                         legs = legs[-2:]
                                         f += 1
                                     elif state.fib_levels and cache_data.iloc[-1]['low'] < state.fib_levels['1.0']:
-                                        state.reset()
-                                        legs = legs[-2:]
-                                        start_index = cache_data.index.tolist().index(legs[0]['start'])
+                                        reset_state_and_window()
+                                        legs = []
                                     if state.fib_levels:
                                         log(f'fib_levels: {state.fib_levels}', color='yellow')
                                         log(f'fib_index: {fib_index}', color='yellow')
@@ -175,9 +181,8 @@ def main():
                                         legs = legs[-2:]
                                         f += 1
                                     elif state.fib_levels and cache_data.iloc[-1]['high'] > state.fib_levels['1.0']:
-                                        state.reset()
-                                        legs = legs[-2:]
-                                        start_index = cache_data.index.tolist().index(legs[0]['start'])
+                                        reset_state_and_window()
+                                        legs = []
                                     if state.fib_levels:
                                         log(f'fib_levels: {state.fib_levels}', color='yellow')
                                         log(f'fib_index: {fib_index}', color='yellow')
@@ -204,9 +209,8 @@ def main():
                                         log(f'Second touch 705 point code:7218455 {cache_data.iloc[-1].name}', color='green')
                                         state.true_position = True      
                                 elif state.fib_levels and cache_data.iloc[-1]['low'] < state.fib_levels['1.0']:
-                                    state.reset()
-                                    legs = legs[-2:]
-                                    start_index = cache_data.index.tolist().index(legs[0]['start'])
+                                    reset_state_and_window()
+                                    legs = []
                             elif swing_type == 'bearish':
                                 if cache_data.iloc[-1]['low'] <= legs[1]['end_value']:
                                     log(f'The {f} of fib_levels value update code:9916455 {cache_data.iloc[-1].name}', color='green')
@@ -226,9 +230,8 @@ def main():
                                         log(f'Second touch 705 point code:6228455 {cache_data.iloc[-1].name}', color='green')
                                         state.true_position = True
                                 elif state.fib_levels and cache_data.iloc[-1]['high'] > state.fib_levels['1.0']:
-                                    state.reset()
-                                    legs = legs[-2:]
-                                    start_index = cache_data.index.tolist().index(legs[0]['start'])
+                                    reset_state_and_window()
+                                    legs = []
 
                         # فاز جدید: مدیریت swing معکوس بدون عبور از fib 1.0
                         elif is_swing and state.fib_levels and last_swing_type != swing_type:
@@ -267,9 +270,8 @@ def main():
                                         log(f'Second touch 705 point code:7218455 {cache_data.iloc[-1].name}', color='green')
                                         state.true_position = True      
                                 elif state.fib_levels and cache_data.iloc[-1]['low'] < state.fib_levels['1.0']:
-                                    state.reset()
-                                    legs = legs[-2:]
-                                    start_index = cache_data.index.tolist().index(legs[0]['start'])
+                                    reset_state_and_window()
+                                    legs = []
                             if last_swing_type == 'bearish':
                                 start_price = cache_data.iloc[-1]['low']
                                 end_price = legs[1]['end_value']
@@ -286,9 +288,8 @@ def main():
                                         log(f'Second touch 705 point code:6228455 {cache_data.iloc[-1].name}', color='green')
                                         state.true_position = True
                                 elif state.fib_levels and cache_data.iloc[-1]['high'] > state.fib_levels['1.0']:
-                                    state.reset()
-                                    legs = legs[-2:]
-                                    start_index = cache_data.index.tolist().index(legs[0]['start'])
+                                    reset_state_and_window()
+                                    legs = []
 
                 elif len(legs) < 3:
                     if state.fib_levels:
@@ -364,14 +365,8 @@ def main():
                             log(f'❌ BUY failed (no result object)', color='red')
                     state.reset()
 
-                    legs_before = legs[:] if 'legs' in locals() else []
+                    reset_state_and_window()
                     legs = []
-                    if legs_before:
-                        last_leg_start = legs_before[-1]['start']
-                        start_index = cache_data.index.tolist().index(last_leg_start)
-                    else:
-                        start_index = max(0, len(cache_data) - window_size)
-                    log(f'End long position, new start_index: {start_index}', color='black')
 
                 # بخش معاملات - sell statement (مطابق منطق main_saver_copy2.py)
                 if state.true_position and (last_swing_type == 'bearish' or swing_type == 'bearish'):
@@ -430,14 +425,8 @@ def main():
                             log(f'❌ SELL failed (no result object)', color='red')
                     state.reset()
 
-                    legs_before = legs[:] if 'legs' in locals() else []
+                    reset_state_and_window()
                     legs = []
-                    if legs_before:
-                        last_leg_start = legs_before[-1]['start']
-                        start_index = cache_data.index.tolist().index(last_leg_start)
-                    else:
-                        start_index = max(0, len(cache_data) - window_size)
-                    log(f'End short position, new start_index: {start_index}', color='black')
                 
                 log(f'cache_data.iloc[-1].name: {cache_data.iloc[-1].name}', color='lightblue_ex')
                 log(f'len(legs): {len(legs)} | start_index: {start_index} | {cache_data.iloc[start_index].name}', color='lightred_ex')
