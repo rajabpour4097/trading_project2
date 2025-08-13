@@ -78,8 +78,8 @@ def main():
             can_trade, trade_message = mt5_conn.can_trade()
             
             if not can_trade:
-                log(f"⏰ {trade_message}", color='yellow')
-                sleep(60)  # چک کردن هر دقیقه در زمان غیرمعاملاتی
+                log(f"⏰ {trade_message}", color='yellow', save_to_file=False)
+                sleep(60)
                 continue
             
             # دریافت داده از MT5
@@ -354,10 +354,37 @@ def main():
                         tp=reward_end,
                         comment=f"Bullish Swing {swing_type}"
                     )
+                    # ارسال ایمیل غیرمسدودکننده
+                    try:
+                        send_trade_email_async(
+                            subject=f"NEW BUY ORDER {MT5_CONFIG['symbol']}",
+                            body=(
+                                f"Time: {datetime.now()}\n"
+                                f"Symbol: {MT5_CONFIG['symbol']}\n"
+                                f"Type: BUY (Bullish Swing)\n"
+                                f"Entry: {buy_entry_price}\n"
+                                f"SL: {stop}\n"
+                                f"TP: {reward_end}\n"
+                            )
+                        )
+                    except Exception as _e:
+                        log(f'Email dispatch failed: {_e}', color='red')
 
                     if result and getattr(result, 'retcode', None) == 10009:
                         log(f'✅ BUY order executed successfully', color='green')
                         log(f'📊 Ticket={result.order} Price={result.price} Volume={result.volume}', color='cyan')
+                        # ارسال ایمیل غیرمسدودکننده
+                        try:
+                            send_trade_email_async(
+                                subject = f"Last order result",
+                                body=(
+                                    f"Ticket={result.order}\n"
+                                    f"Price={result.price}\n"
+                                    f"Volume={result.volume}\n"
+                                )
+                            )
+                        except Exception as _e:
+                            log(f'Email dispatch failed: {_e}', color='red')
                     else:
                         if result:
                             log(f'❌ BUY failed retcode={result.retcode} comment={result.comment}', color='red')
@@ -408,8 +435,6 @@ def main():
                                 f"Entry: {sell_entry_price}\n"
                                 f"SL: {stop}\n"
                                 f"TP: {reward_end}\n"
-                                f"WinRatio: {win_ratio}\n"
-                                f"Retcode: {getattr(result,'retcode', 'NA')}\n"
                             )
                         )
                     except Exception as _e:
@@ -418,6 +443,18 @@ def main():
                     if result and getattr(result, 'retcode', None) == 10009:
                         log(f'✅ SELL order executed successfully', color='green')
                         log(f'📊 Ticket={result.order} Price={result.price} Volume={result.volume}', color='cyan')
+                        # ارسال ایمیل غیرمسدودکننده
+                        try:
+                            send_trade_email_async(
+                                subject = f"Last order result",
+                                body=(
+                                    f"Ticket={result.order}\n"
+                                    f"Price={result.price}\n"
+                                    f"Volume={result.volume}\n"
+                                )
+                            )
+                        except Exception as _e:
+                            log(f'Email dispatch failed: {_e}', color='red')
                     else:
                         if result:
                             log(f'❌ SELL failed retcode={result.retcode} comment={result.comment}', color='red')
