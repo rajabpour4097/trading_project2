@@ -4,1263 +4,258 @@ import pytz
 from datetime import datetime, time
 from metatrader5_config import MT5_CONFIG
 
+RET_OK = 10009  # mt5.TRADE_RETCODE_DONE
+
 class MT5Connector:
     def __init__(self):
-        # استفاده از تنظیمات از config file
-        self.symbol = MT5_CONFIG['symbol']
-        self.lot = MT5_CONFIG['lot_size']
-        self.deviation = MT5_CONFIG['deviation']
-        self.magic = MT5_CONFIG['magic_number']
-        self.max_spread = MT5_CONFIG['max_spread']
-        self.min_balance = MT5_CONFIG['min_balance']
-        self.trading_hours = MT5_CONFIG['trading_hours']
-        
-        # تنظیم timezone ایران
+        cfg = MT5_CONFIG
+        self.symbol = cfg['symbol']
+        self.lot = cfg['lot_size']
+        self.deviation = cfg['deviation']
+        self.magic = cfg['magic_number']
+        self.max_spread = cfg['max_spread']
+        self.min_balance = cfg['min_balance']
+        self.trading_hours = cfg['trading_hours']
         self.iran_tz = pytz.timezone('Asia/Tehran')
         self.utc_tz = pytz.UTC
-        
+
+    # ---------- Time / Session ----------
     def get_iran_time(self):
-        """دریافت زمان فعلی ایران"""
-        utc_now = datetime.now(self.utc_tz)
-        iran_now = utc_now.astimezone(self.iran_tz)
-        return iran_now
-        
+        return datetime.now(self.utc_tz).astimezone(self.iran_tz)
+
     def is_trading_time(self):
-        """بررسی اینکه آیا زمان فعلی در ساعات معاملاتی است یا نه (بر اساس ساعت ایران)"""
-        iran_now = self.get_iran_time()
-        current_time = iran_now.time()
-        
-        start_time = time.fromisoformat(self.trading_hours['start'])
-        end_time = time.fromisoformat(self.trading_hours['end'])
-        
-        # اگر ساعت پایان از شروع کمتر باشد (مثل 22:00 تا 08:00)
-        if start_time > end_time:
-            return current_time >= start_time or current_time <= end_time
-        else:
-            return start_time <= current_time <= end_time
-    
+        start = time.fromisoformat(self.trading_hours['start'])
+        end = time.fromisoformat(self.trading_hours['end'])
+        now_t = self.get_iran_time().time()
+        if start <= end:
+            return start <= now_t <= end
+        # window passes midnight
+        return now_t >= start or now_t <= end
+
     def check_weekend(self):
-        """بررسی تعطیلی آخر هفته (بر اساس ساعت ایران)"""
-        iran_now = self.get_iran_time()
-        
-        # در ایران: پنج‌شنبه = 3, جمعه = 4, شنبه = 5
-        # فارکس: جمعه شب تا یکشنبه شب بسته است
-        
-        if iran_now.weekday() == 4:  # جمعه
-            # بعد از ساعت 20:30 جمعه تا شب، بازار بسته
-            if iran_now.time() >= time(20, 30):
-                return False
-        elif iran_now.weekday() == 5:  # شنبه
-            # تمام روز شنبه بازار بسته
-            return False
-        elif iran_now.weekday() == 6:  # یکشنبه
-            # تا ساعت 20:30 یکشنبه بازار بسته
-            if iran_now.time() <= time(20, 30):
-                return False
-        
-        return True
-    
+        # Forex shuts late Fri (server time). Simplified: block Saturday/Sunday
+        wd = self.get_iran_time().weekday()  # Monday=0
+        return wd not in (5, 6)  # 5=Saturday,6=Sunday (adjust if broker different)
+
     def can_trade(self):
-        """بررسی کلی امکان معامله"""
-        iran_time = self.get_iran_time()
-        
         if not self.check_weekend():
-            return False, f"Market closed - Weekend (Iran time: {iran_time.strftime('%Y-%m-%d %H:%M:%S')})"
-        
+            return False, "Weekend - trading disabled"
         if not self.is_trading_time():
-            return False, f"Outside trading hours ({self.trading_hours['start']}-{self.trading_hours['end']} Iran time: {iran_time.strftime('%H:%M')})"
-        
-        return True, f"Trading allowed (Iran time: {iran_time.strftime('%H:%M')})"
-    
+            return False, "Outside configured trading hours"
+        ti = mt5.terminal_info()
+        if not ti:
+            return False, "Terminal info unavailable"
+        if not ti.trade_allowed:
+            return False, "Terminal AutoTrading disabled"
+        acc = mt5.account_info()
+        if not acc:
+            return False, "Account info unavailable"
+        if acc.balance < self.min_balance:
+            return False, f"Insufficient balance < {self.min_balance}"
+        return True, "Trading is allowed"
+
+    # ---------- Initialization ----------
     def initialize(self):
-        """اتصال به MT5 با بررسی موجودی"""
         if not mt5.initialize():
-            print("initialize() failed, error code =", mt5.last_error())
+            print("❌ MT5 initialize failed:", mt5.last_error())
             return False
-        
-        # بررسی موجودی حساب
-        account_info = mt5.account_info()
-        if account_info and account_info.balance < self.min_balance:
-            print(f"❌ Balance ({account_info.balance}) is below minimum ({self.min_balance})")
+        acc = mt5.account_info()
+        if acc and acc.balance < self.min_balance:
+            print(f"❌ Balance {acc.balance} < min {self.min_balance}")
             return False
-        
-        # نمایش زمان ایران
-        iran_time = self.get_iran_time()
         print("✅ MT5 connection established")
-        print(f"Terminal: {mt5.terminal_info().name if mt5.terminal_info() else 'Unknown'}")
-        print(f"Account: {account_info.login if account_info else 'Unknown'}")
-        print(f"Balance: ${account_info.balance if account_info else 0}")
-        print(f"🇮🇷 Iran Time: {iran_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         return True
-    
+
+    def shutdown(self):
+        mt5.shutdown()
+
+    # ---------- Data ----------
     def get_live_price(self):
-        """دریافت قیمت زنده با بررسی spread"""
         tick = mt5.symbol_info_tick(self.symbol)
-        if tick is None:
-            print(f"Failed to get tick for {self.symbol}")
+        if not tick:
             return None
-        
-        # بررسی spread
-        spread = (tick.ask - tick.bid) * 10000  # به pip تبدیل
+        spread = (tick.ask - tick.bid) * 10000
         if spread > self.max_spread:
-            print(f"⚠️ High spread: {spread:.1f} pips (max: {self.max_spread})")
-            return None
-        
-        # تبدیل زمان tick به زمان ایران
+            print(f"⚠️ Spread {spread:.1f} > max {self.max_spread}")
         utc_time = datetime.fromtimestamp(tick.time, tz=self.utc_tz)
-        iran_time = utc_time.astimezone(self.iran_tz)
-        
         return {
             'bid': tick.bid,
             'ask': tick.ask,
             'spread': spread,
-            'time': iran_time,
+            'time': utc_time.astimezone(self.iran_tz),
             'utc_time': utc_time
         }
-    
-    def get_historical_data(self, timeframe=mt5.TIMEFRAME_M1, count=1000):
-        """دریافت داده‌های تاریخی"""
+
+    def get_historical_data(self, timeframe=mt5.TIMEFRAME_M1, count=500):
         rates = mt5.copy_rates_from_pos(self.symbol, timeframe, 0, count)
         if rates is None:
-            print("Failed to get historical data")
             return None
-            
         df = pd.DataFrame(rates)
-        
-        # تبدیل زمان به timezone ایران
-        df['time'] = pd.to_datetime(df['time'], unit='s', utc=True)
-        df['time'] = df['time'].dt.tz_convert(self.iran_tz)
+        df['time'] = pd.to_datetime(df['time'], unit='s', utc=True).dt.tz_convert(self.iran_tz)
         df.set_index('time', inplace=True)
-        
-        # تبدیل نام ستون‌ها
         df = df.rename(columns={'tick_volume': 'volume'})
         df['timestamp'] = df.index
-        
         return df
-    
-    def get_supported_filling_mode(self):
-        """تشخیص بهترین filling mode پشتیبانی شده با debug اطلاعات"""
-        symbol_info = mt5.symbol_info(self.symbol)
-        if symbol_info is None:
-            print(f"❌ Symbol {self.symbol} not found")
-            return mt5.ORDER_FILLING_IOC
-            
-        filling_mode = symbol_info.filling_mode
-        
-        # نمایش اطلاعات debug
-        print(f"🔍 Symbol filling mode: {filling_mode}")
-        print(f"🔍 FOK support (bit 1): {bool(filling_mode & 1)}")  # اصلاح شده
-        print(f"🔍 IOC support (bit 2): {bool(filling_mode & 2)}")  # اصلاح شده
-        print(f"🔍 RETURN support (bit 0): {filling_mode == 0}")     # اضافه شده
-        
-        # ترتیب اولویت filling modes - اصلاح شده
-        if filling_mode & 2:  # IOC = bit 2
-            print("✅ Using ORDER_FILLING_IOC")
-            return mt5.ORDER_FILLING_IOC
-        elif filling_mode & 1:  # FOK = bit 1
-            print("✅ Using ORDER_FILLING_FOK")
-            return mt5.ORDER_FILLING_FOK
-        else:  # RETURN = 0
-            print("✅ Using ORDER_FILLING_RETURN")
-            return mt5.ORDER_FILLING_RETURN
-    
+
+    # ---------- Broker capability helpers ----------
     def test_filling_modes(self):
-        """تست تمام filling modes برای تشخیص پشتیبانی"""
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info:
+        info = mt5.symbol_info(self.symbol)
+        if not info:
+            print("Symbol info not available")
             return None
-            
-        print(f"📊 Testing filling modes for {self.symbol}:")
-        print(f"   Filling mode value: {symbol_info.filling_mode}")
-        
-        # تست هر filling mode با bit صحیح
-        modes = [
-            (0, "RETURN", mt5.ORDER_FILLING_RETURN),
-            (1, "FOK", mt5.ORDER_FILLING_FOK),
-            (2, "IOC", mt5.ORDER_FILLING_IOC)
-        ]
-        
-        for bit_value, mode_name, mt5_constant in modes:
-            if bit_value == 0 and symbol_info.filling_mode == 0:
-                print(f"   ✅ {mode_name} ({mt5_constant}) - Supported")
-            elif bit_value > 0 and (symbol_info.filling_mode & bit_value):
-                print(f"   ✅ {mode_name} ({mt5_constant}) - Supported")
-            else:
-                print(f"   ❌ {mode_name} ({mt5_constant}) - Not supported")
-        
-        return symbol_info.filling_mode
-    
+        print(f"Filling mode raw: {info.filling_mode}")
+        return info.filling_mode
+
+    def get_supported_filling_mode(self):
+        info = mt5.symbol_info(self.symbol)
+        if not info:
+            return None
+        # Prefer IOC, then FOK, else RETURN
+        if info.filling_mode & mt5.ORDER_FILLING_IOC:
+            return mt5.ORDER_FILLING_IOC
+        if info.filling_mode & mt5.ORDER_FILLING_FOK:
+            return mt5.ORDER_FILLING_FOK
+        return mt5.ORDER_FILLING_RETURN
+
+    # ---------- Stop validation ----------
+    def calculate_valid_stops(self, entry_price, sl_price, tp_price, order_type):
+        info = mt5.symbol_info(self.symbol)
+        if not info:
+            return None, None
+        point = info.point
+        min_dist = max(info.trade_stops_level * point, 3 * point)
+        def norm(p):
+            digits = info.digits
+            return float(f"{p:.{digits}f}")
+        adjusted = False
+        if order_type == mt5.ORDER_TYPE_BUY:
+            # SL must be below entry, TP above
+            if sl_price >= entry_price - min_dist:
+                sl_price = entry_price - min_dist
+                adjusted = True
+            if tp_price <= entry_price + min_dist:
+                tp_price = entry_price + min_dist
+                adjusted = True
+        elif order_type == mt5.ORDER_TYPE_SELL:
+            if sl_price <= entry_price + min_dist:
+                sl_price = entry_price + min_dist
+                adjusted = True
+            if tp_price >= entry_price - min_dist:
+                tp_price = entry_price - min_dist
+                adjusted = True
+        sl_price = norm(sl_price)
+        tp_price = norm(tp_price)
+        return sl_price, tp_price
+
+    # ---------- Order sending core ----------
     def try_all_filling_modes(self, request):
-        """تست تمام filling modes تا یکی کار کند"""
-        # ترتیب اولویت برای تست
-        filling_modes = [
-            mt5.ORDER_FILLING_IOC,
-            mt5.ORDER_FILLING_FOK,
-            mt5.ORDER_FILLING_RETURN
-        ]
-        
-        for filling_mode in filling_modes:
-            request_copy = request.copy()
-            request_copy["type_filling"] = filling_mode
-            
-            print(f"🔄 Trying filling mode: {filling_mode}")
-            result = mt5.order_send(request_copy)
-            
-            if result and result.retcode == 10009:
-                print(f"✅ Success with filling mode: {filling_mode}")
+        for mode in (mt5.ORDER_FILLING_IOC,
+                     mt5.ORDER_FILLING_FOK,
+                     mt5.ORDER_FILLING_RETURN):
+            req = dict(request)
+            req["type_filling"] = mode
+            result = mt5.order_send(req)
+            if result and result.retcode in (RET_OK, mt5.TRADE_RETCODE_PLACED):
                 return result
-            elif result:
-                print(f"❌ Failed with filling mode {filling_mode}: {result.comment} (code: {result.retcode})")
-        
-        return None
-    
-    def open_sell_position(self, tick, sl, tp, comment=""):
-        """باز کردن پوزیشن فروش با تست تمام filling modes"""
-        iran_time = self.get_iran_time()
-        comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
-        
-        # دریافت قیمت فعلی برای validation
-        if not tick:
-            return None
-        
-        # ساخت request اولیه
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": self.symbol,
-            "volume": self.lot,
-            "type": mt5.ORDER_TYPE_SELL,
-            "price": tick.bid,
-            "sl": sl,
-            "tp": tp,
-            "deviation": self.deviation,
-            "magic": self.magic,
-            "comment": comment_with_time,
-            "type_time": mt5.ORDER_TIME_GTC,
-        }
-        
-        print(f"📤 Sending SELL order:")
-        print(f"   Symbol: {self.symbol}")
-        print(f"   Volume: {self.lot}")
-        print(f"   Price: {tick.bid}")
-        print(f"   SL: {sl}")
-        print(f"   TP: {tp}")
-        print(f"   Deviation: {self.deviation}")
-        
-        # تست با تمام filling modes
-        result = self.try_all_filling_modes(request)
-        
-        if result and result.retcode == 10009:
-            print(f"✅ SELL order successful: ticket {result.order}")
-        else:
-            print(f"❌ All filling modes failed")
-        
-        return result
-    
+        return result  # return last attempt
+
+    # ---------- Trading ----------
     def open_buy_position(self, tick, sl, tp, comment=""):
-        """باز کردن پوزیشن خرید با تست تمام filling modes"""
-        iran_time = self.get_iran_time()
-        comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
-        
-        # دریافت قیمت فعلی برای validation
         if not tick:
+            print("No tick data")
             return None
-        
-        # ساخت request اولیه
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": self.symbol,
-            "volume": self.lot,
-            "type": mt5.ORDER_TYPE_BUY,
-            "price": tick.ask,
-            "sl": sl,
-            "tp": tp,
-            "deviation": self.deviation,
-            "magic": self.magic,
-            "comment": comment_with_time,
-            "type_time": mt5.ORDER_TIME_GTC,
-        }
-        
-        print(f"📤 Sending BUY order:")
-        print(f"   Symbol: {self.symbol}")
-        print(f"   Volume: {self.lot}")
-        print(f"   Price: {tick}")
-        print(f"   SL: {sl}")
-        print(f"   TP: {tp}")
-        print(f"   Deviation: {self.deviation}")
-        
-        # تست با تمام filling modes
-        result = self.try_all_filling_modes(request)
-        
-        if result and result.retcode == 10009:
-            print(f"✅ BUY order successful: ticket {result.order}")
-        else:
-            print(f"❌ All filling modes failed")
-        
-        return result
-    
-    def close_all_positions(self):
-        """بستن تمام پوزیشن‌ها"""
-        positions = mt5.positions_get(symbol=self.symbol)
-        if positions is None:
-            return
-            
-        for position in positions:
-            tick = mt5.symbol_info_tick(self.symbol)
-            
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": self.symbol,
-                "volume": position.volume,
-                "type": mt5.ORDER_TYPE_SELL if position.type == 0 else mt5.ORDER_TYPE_BUY,
-                "position": position.ticket,
-                "price": tick.bid if position.type == 0 else tick.ask,
-                "deviation": self.deviation,
-                "magic": self.magic,
-                "comment": "Close position",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
-            }
-            
-            mt5.order_send(request)
-    
-    def shutdown(self):
-        """قطع اتصال"""
-        mt5.shutdown()
-    
-    def check_trading_conditions(self):
-        """بررسی شرایط معاملاتی"""
-        # بررسی اتصال
-        if not mt5.terminal_info():
-            return False, "MT5 terminal not connected"
-        
-        # بررسی symbol
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info:
-            return False, f"Symbol {self.symbol} not found"
-        
-        if not symbol_info.visible:
-            mt5.symbol_select(self.symbol, True)
-        
-        # بررسی AutoTrading
-        terminal = mt5.terminal_info()
-        if not terminal.trade_allowed:
-            return False, "AutoTrading disabled in terminal"
-        
-        # بررسی حساب
-        account = mt5.account_info()
-        if not account:
-            return False, "Account info not available"
-        
-        if not account.trade_allowed:
-            return False, "Trading not allowed on account"
-        
-        return True, "All conditions OK"
-    
-    def check_symbol_properties(self):
-        """بررسی جزئیات symbol برای debugging"""
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info:
-            print(f"❌ Symbol {self.symbol} not found")
-            return
-        
-        print(f"📊 Symbol Properties for {self.symbol}:")
-        print(f"   Visible: {symbol_info.visible}")
-        print(f"   Select: {symbol_info.select}")
-        print(f"   Trade Mode: {symbol_info.trade_mode}")
-        print(f"   Trade Execution: {symbol_info.trade_exemode}")
-        print(f"   Filling Mode: {symbol_info.filling_mode}")
-        print(f"   Trade Stops Level: {symbol_info.trade_stops_level}")
-        print(f"   Volume Min: {symbol_info.volume_min}")
-        print(f"   Volume Max: {symbol_info.volume_max}")
-        print(f"   Volume Step: {symbol_info.volume_step}")
-        print(f"   Point: {symbol_info.point}")
-        print(f"   Digits: {symbol_info.digits}")
-        
-        # تنظیم symbol اگر visible نیست
-        if not symbol_info.visible:
-            print("🔧 Making symbol visible...")
-            if mt5.symbol_select(self.symbol, True):
-                print("✅ Symbol is now visible")
-            else:
-                print("❌ Failed to make symbol visible")
-    
-    def calculate_valid_stops(self, entry_price, sl_price, tp_price, order_type):
-        """Validate & adjust SL/TP. Returns (sl, tp) or (None, None) on fatal error."""
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info:
-            print("❌ Symbol info not available")
-            return None, None
-
-        point = symbol_info.point
-        stops_level_points = symbol_info.trade_stops_level  # in points (broker terms)
-        min_distance = max(stops_level_points * point, 3 * point)  # ensure small practical floor
-
-        # Helper to round to proper tick
-        def norm(p):
-            digits = symbol_info.digits
-            return round(p, digits)
-
-        adjusted = False
-
-        if order_type == mt5.ORDER_TYPE_BUY:
-            # SL must be below, TP above
-            if sl_price is None or sl_price >= entry_price:
-                sl_price = entry_price - min_distance
-                adjusted = True
-            if tp_price is None or tp_price <= entry_price:
-                tp_price = entry_price + (entry_price - sl_price) * 1.2
-                adjusted = True
-
-            # Enforce minimum distances
-            if (entry_price - sl_price) < min_distance:
-                sl_price = entry_price - min_distance
-                adjusted = True
-            if (tp_price - entry_price) < min_distance:
-                tp_price = entry_price + min_distance
-                adjusted = True
-
-        elif order_type == mt5.ORDER_TYPE_SELL:
-            # SL must be above, TP below
-            if sl_price is None or sl_price <= entry_price:
-                sl_price = entry_price + min_distance
-                adjusted = True
-            if tp_price is None or tp_price >= entry_price:
-                tp_price = entry_price - (sl_price - entry_price) * 1.2
-                adjusted = True
-
-            # Enforce minimum distances
-            if (sl_price - entry_price) < min_distance:
-                sl_price = entry_price + min_distance
-                adjusted = True
-            if (entry_price - tp_price) < min_distance:
-                tp_price = entry_price - min_distance
-                adjusted = True
-        else:
-            print("⚠️ Unsupported order_type for stop validation")
-            return None, None
-
-        sl_price = norm(sl_price)
-        tp_price = norm(tp_price)
-
-        if adjusted:
-            print(f"🔧 Adjusted stops -> SL={sl_price} TP={tp_price} (min_distance={min_distance:.5f})")
-        else:
-            print(f"✅ Stops valid -> SL={sl_price} TP={tp_price}")
-
-        return sl_price, tp_price
-
-    def open_sell_position(self, tick, sl, tp, comment=""):
-        """Open SELL with validation & adaptive filling modes."""
-        iran_time = self.get_iran_time()
-        comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
-        if not tick:
-            print("❌ No tick data")
-            return None
-
-        entry_price = tick.bid
-        sl_adj, tp_adj = self.calculate_valid_stops(entry_price, sl, tp, mt5.ORDER_TYPE_SELL)
-        if sl_adj is None:
-            print("❌ Cannot compute valid stops")
-            return None
-
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": self.symbol,
-            "volume": self.lot,
-            "type": mt5.ORDER_TYPE_SELL,
-            "price": entry_price,
-            "sl": sl_adj,
-            "tp": tp_adj,
-            "deviation": self.deviation,
-            "magic": self.magic,
-            "comment": comment_with_time,
-            "type_time": mt5.ORDER_TIME_GTC,
-        }
-
-        print(f"📤 Sending SELL order: Price={entry_price:.5f} SL={sl_adj:.5f} TP={tp_adj:.5f}")
-        result = self.try_all_filling_modes(request)
-
-        if result is None:
-            err = mt5.last_error()
-            print(f"❌ order_send returned None. last_error={err}")
-            return None
-
-        if result.retcode == 10009:
-            print(f"✅ SELL success ticket={result.order} deal={getattr(result,'deal', 'NA')}")
-        else:
-            print(f"❌ SELL failed retcode={result.retcode} comment={result.comment}")
-        return result
-    
-    def open_buy_position(self, tick, sl, tp, comment=""):
-        """باز کردن پوزیشن خرید با تست تمام filling modes"""
-        iran_time = self.get_iran_time()
-        comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
-        
-        # دریافت قیمت فعلی برای validation
-        if not tick:
-            return None
-        
-        # ساخت request اولیه
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": self.symbol,
-            "volume": self.lot,
-            "type": mt5.ORDER_TYPE_BUY,
-            "price": tick.ask,
-            "sl": sl,
-            "tp": tp,
-            "deviation": self.deviation,
-            "magic": self.magic,
-            "comment": comment_with_time,
-            "type_time": mt5.ORDER_TIME_GTC,
-        }
-        
-        print(f"📤 Sending BUY order:")
-        print(f"   Symbol: {self.symbol}")
-        print(f"   Volume: {self.lot}")
-        print(f"   Price: {tick}")
-        print(f"   SL: {sl}")
-        print(f"   TP: {tp}")
-        print(f"   Deviation: {self.deviation}")
-        
-        # تست با تمام filling modes
-        result = self.try_all_filling_modes(request)
-        
-        if result and result.retcode == 10009:
-            print(f"✅ BUY order successful: ticket {result.order}")
-        else:
-            print(f"❌ All filling modes failed")
-        
-        return result
-    
-    def close_all_positions(self):
-        """بستن تمام پوزیشن‌ها"""
-        positions = mt5.positions_get(symbol=self.symbol)
-        if positions is None:
-            return
-            
-        for position in positions:
-            tick = mt5.symbol_info_tick(self.symbol)
-            
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": self.symbol,
-                "volume": position.volume,
-                "type": mt5.ORDER_TYPE_SELL if position.type == 0 else mt5.ORDER_TYPE_BUY,
-                "position": position.ticket,
-                "price": tick.bid if position.type == 0 else tick.ask,
-                "deviation": self.deviation,
-                "magic": self.magic,
-                "comment": "Close position",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
-            }
-            
-            mt5.order_send(request)
-    
-    def shutdown(self):
-        """قطع اتصال"""
-        mt5.shutdown()
-    
-    def check_trading_conditions(self):
-        """بررسی شرایط معاملاتی"""
-        # بررسی اتصال
-        if not mt5.terminal_info():
-            return False, "MT5 terminal not connected"
-        
-        # بررسی symbol
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info:
-            return False, f"Symbol {self.symbol} not found"
-        
-        if not symbol_info.visible:
-            mt5.symbol_select(self.symbol, True)
-        
-        # بررسی AutoTrading
-        terminal = mt5.terminal_info()
-        if not terminal.trade_allowed:
-            return False, "AutoTrading disabled in terminal"
-        
-        # بررسی حساب
-        account = mt5.account_info()
-        if not account:
-            return False, "Account info not available"
-        
-        if not account.trade_allowed:
-            return False, "Trading not allowed on account"
-        
-        return True, "All conditions OK"
-    
-    def check_symbol_properties(self):
-        """بررسی جزئیات symbol برای debugging"""
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info:
-            print(f"❌ Symbol {self.symbol} not found")
-            return
-        
-        print(f"📊 Symbol Properties for {self.symbol}:")
-        print(f"   Visible: {symbol_info.visible}")
-        print(f"   Select: {symbol_info.select}")
-        print(f"   Trade Mode: {symbol_info.trade_mode}")
-        print(f"   Trade Execution: {symbol_info.trade_exemode}")
-        print(f"   Filling Mode: {symbol_info.filling_mode}")
-        print(f"   Trade Stops Level: {symbol_info.trade_stops_level}")
-        print(f"   Volume Min: {symbol_info.volume_min}")
-        print(f"   Volume Max: {symbol_info.volume_max}")
-        print(f"   Volume Step: {symbol_info.volume_step}")
-        print(f"   Point: {symbol_info.point}")
-        print(f"   Digits: {symbol_info.digits}")
-        
-        # تنظیم symbol اگر visible نیست
-        if not symbol_info.visible:
-            print("🔧 Making symbol visible...")
-            if mt5.symbol_select(self.symbol, True):
-                print("✅ Symbol is now visible")
-            else:
-                print("❌ Failed to make symbol visible")
-    
-    def calculate_valid_stops(self, entry_price, sl_price, tp_price, order_type):
-        """Validate & adjust SL/TP. Returns (sl, tp) or (None, None) on fatal error."""
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info:
-            print("❌ Symbol info not available")
-            return None, None
-
-        point = symbol_info.point
-        stops_level_points = symbol_info.trade_stops_level  # in points (broker terms)
-        min_distance = max(stops_level_points * point, 3 * point)  # ensure small practical floor
-
-        # Helper to round to proper tick
-        def norm(p):
-            digits = symbol_info.digits
-            return round(p, digits)
-
-        adjusted = False
-
-        if order_type == mt5.ORDER_TYPE_BUY:
-            # SL must be below, TP above
-            if sl_price is None or sl_price >= entry_price:
-                sl_price = entry_price - min_distance
-                adjusted = True
-            if tp_price is None or tp_price <= entry_price:
-                tp_price = entry_price + (entry_price - sl_price) * 1.2
-                adjusted = True
-
-            # Enforce minimum distances
-            if (entry_price - sl_price) < min_distance:
-                sl_price = entry_price - min_distance
-                adjusted = True
-            if (tp_price - entry_price) < min_distance:
-                tp_price = entry_price + min_distance
-                adjusted = True
-
-        elif order_type == mt5.ORDER_TYPE_SELL:
-            # SL must be above, TP below
-            if sl_price is None or sl_price <= entry_price:
-                sl_price = entry_price + min_distance
-                adjusted = True
-            if tp_price is None or tp_price >= entry_price:
-                tp_price = entry_price - (sl_price - entry_price) * 1.2
-                adjusted = True
-
-            # Enforce minimum distances
-            if (sl_price - entry_price) < min_distance:
-                sl_price = entry_price + min_distance
-                adjusted = True
-            if (entry_price - tp_price) < min_distance:
-                tp_price = entry_price - min_distance
-                adjusted = True
-        else:
-            print("⚠️ Unsupported order_type for stop validation")
-            return None, None
-
-        sl_price = norm(sl_price)
-        tp_price = norm(tp_price)
-
-        if adjusted:
-            print(f"🔧 Adjusted stops -> SL={sl_price} TP={tp_price} (min_distance={min_distance:.5f})")
-        else:
-            print(f"✅ Stops valid -> SL={sl_price} TP={tp_price}")
-
-        return sl_price, tp_price
-
-    def open_sell_position(self, tick, sl, tp, comment=""):
-        """Open SELL with validation & adaptive filling modes."""
-        iran_time = self.get_iran_time()
-        comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
-        if not tick:
-            print("❌ No tick data")
-            return None
-
-        entry_price = tick.bid
-        sl_adj, tp_adj = self.calculate_valid_stops(entry_price, sl, tp, mt5.ORDER_TYPE_SELL)
-        if sl_adj is None:
-            print("❌ Cannot compute valid stops")
-            return None
-
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": self.symbol,
-            "volume": self.lot,
-            "type": mt5.ORDER_TYPE_SELL,
-            "price": entry_price,
-            "sl": sl_adj,
-            "tp": tp_adj,
-            "deviation": self.deviation,
-            "magic": self.magic,
-            "comment": comment_with_time,
-            "type_time": mt5.ORDER_TIME_GTC,
-        }
-
-        print(f"📤 Sending SELL order: Price={entry_price:.5f} SL={sl_adj:.5f} TP={tp_adj:.5f}")
-        result = self.try_all_filling_modes(request)
-
-        if result is None:
-            err = mt5.last_error()
-            print(f"❌ order_send returned None. last_error={err}")
-            return None
-
-        if result.retcode == 10009:
-            print(f"✅ SELL success ticket={result.order} deal={getattr(result,'deal', 'NA')}")
-        else:
-            print(f"❌ SELL failed retcode={result.retcode} comment={result.comment}")
-        return result
-    
-    def open_buy_position(self, tick, sl, tp, comment=""):
-        """باز کردن پوزیشن خرید با تست تمام filling modes"""
-        iran_time = self.get_iran_time()
-        comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
-        
-        # دریافت قیمت فعلی برای validation
-        if not tick:
-            return None
-        
-        # ساخت request اولیه
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": self.symbol,
-            "volume": self.lot,
-            "type": mt5.ORDER_TYPE_BUY,
-            "price": tick.ask,
-            "sl": sl,
-            "tp": tp,
-            "deviation": self.deviation,
-            "magic": self.magic,
-            "comment": comment_with_time,
-            "type_time": mt5.ORDER_TIME_GTC,
-        }
-        
-        print(f"📤 Sending BUY order:")
-        print(f"   Symbol: {self.symbol}")
-        print(f"   Volume: {self.lot}")
-        print(f"   Price: {tick}")
-        print(f"   SL: {sl}")
-        print(f"   TP: {tp}")
-        print(f"   Deviation: {self.deviation}")
-        
-        # تست با تمام filling modes
-        result = self.try_all_filling_modes(request)
-        
-        if result and result.retcode == 10009:
-            print(f"✅ BUY order successful: ticket {result.order}")
-        else:
-            print(f"❌ All filling modes failed")
-        
-        return result
-    
-    def close_all_positions(self):
-        """بستن تمام پوزیشن‌ها"""
-        positions = mt5.positions_get(symbol=self.symbol)
-        if positions is None:
-            return
-            
-        for position in positions:
-            tick = mt5.symbol_info_tick(self.symbol)
-            
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": self.symbol,
-                "volume": position.volume,
-                "type": mt5.ORDER_TYPE_SELL if position.type == 0 else mt5.ORDER_TYPE_BUY,
-                "position": position.ticket,
-                "price": tick.bid if position.type == 0 else tick.ask,
-                "deviation": self.deviation,
-                "magic": self.magic,
-                "comment": "Close position",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
-            }
-            
-            mt5.order_send(request)
-    
-    def shutdown(self):
-        """قطع اتصال"""
-        mt5.shutdown()
-    
-    def check_trading_conditions(self):
-        """بررسی شرایط معاملاتی"""
-        # بررسی اتصال
-        if not mt5.terminal_info():
-            return False, "MT5 terminal not connected"
-        
-        # بررسی symbol
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info:
-            return False, f"Symbol {self.symbol} not found"
-        
-        if not symbol_info.visible:
-            mt5.symbol_select(self.symbol, True)
-        
-        # بررسی AutoTrading
-        terminal = mt5.terminal_info()
-        if not terminal.trade_allowed:
-            return False, "AutoTrading disabled in terminal"
-        
-        # بررسی حساب
-        account = mt5.account_info()
-        if not account:
-            return False, "Account info not available"
-        
-        if not account.trade_allowed:
-            return False, "Trading not allowed on account"
-        
-        return True, "All conditions OK"
-    
-    def check_symbol_properties(self):
-        """بررسی جزئیات symbol برای debugging"""
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info:
-            print(f"❌ Symbol {self.symbol} not found")
-            return
-        
-        print(f"📊 Symbol Properties for {self.symbol}:")
-        print(f"   Visible: {symbol_info.visible}")
-        print(f"   Select: {symbol_info.select}")
-        print(f"   Trade Mode: {symbol_info.trade_mode}")
-        print(f"   Trade Execution: {symbol_info.trade_exemode}")
-        print(f"   Filling Mode: {symbol_info.filling_mode}")
-        print(f"   Trade Stops Level: {symbol_info.trade_stops_level}")
-        print(f"   Volume Min: {symbol_info.volume_min}")
-        print(f"   Volume Max: {symbol_info.volume_max}")
-        print(f"   Volume Step: {symbol_info.volume_step}")
-        print(f"   Point: {symbol_info.point}")
-        print(f"   Digits: {symbol_info.digits}")
-        
-        # تنظیم symbol اگر visible نیست
-        if not symbol_info.visible:
-            print("🔧 Making symbol visible...")
-            if mt5.symbol_select(self.symbol, True):
-                print("✅ Symbol is now visible")
-            else:
-                print("❌ Failed to make symbol visible")
-    
-    def calculate_valid_stops(self, entry_price, sl_price, tp_price, order_type):
-        """Validate & adjust SL/TP. Returns (sl, tp) or (None, None) on fatal error."""
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info:
-            print("❌ Symbol info not available")
-            return None, None
-
-        point = symbol_info.point
-        stops_level_points = symbol_info.trade_stops_level  # in points (broker terms)
-        min_distance = max(stops_level_points * point, 3 * point)  # ensure small practical floor
-
-        # Helper to round to proper tick
-        def norm(p):
-            digits = symbol_info.digits
-            return round(p, digits)
-
-        adjusted = False
-
-        if order_type == mt5.ORDER_TYPE_BUY:
-            # SL must be below, TP above
-            if sl_price is None or sl_price >= entry_price:
-                sl_price = entry_price - min_distance
-                adjusted = True
-            if tp_price is None or tp_price <= entry_price:
-                tp_price = entry_price + (entry_price - sl_price) * 1.2
-                adjusted = True
-
-            # Enforce minimum distances
-            if (entry_price - sl_price) < min_distance:
-                sl_price = entry_price - min_distance
-                adjusted = True
-            if (tp_price - entry_price) < min_distance:
-                tp_price = entry_price + min_distance
-                adjusted = True
-
-        elif order_type == mt5.ORDER_TYPE_SELL:
-            # SL must be above, TP below
-            if sl_price is None or sl_price <= entry_price:
-                sl_price = entry_price + min_distance
-                adjusted = True
-            if tp_price is None or tp_price >= entry_price:
-                tp_price = entry_price - (sl_price - entry_price) * 1.2
-                adjusted = True
-
-            # Enforce minimum distances
-            if (sl_price - entry_price) < min_distance:
-                sl_price = entry_price + min_distance
-                adjusted = True
-            if (entry_price - tp_price) < min_distance:
-                tp_price = entry_price - min_distance
-                adjusted = True
-        else:
-            print("⚠️ Unsupported order_type for stop validation")
-            return None, None
-
-        sl_price = norm(sl_price)
-        tp_price = norm(tp_price)
-
-        if adjusted:
-            print(f"🔧 Adjusted stops -> SL={sl_price} TP={tp_price} (min_distance={min_distance:.5f})")
-        else:
-            print(f"✅ Stops valid -> SL={sl_price} TP={tp_price}")
-
-        return sl_price, tp_price
-
-    def open_sell_position(self, tick, sl, tp, comment=""):
-        """Open SELL with validation & adaptive filling modes."""
-        iran_time = self.get_iran_time()
-        comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
-        if not tick:
-            print("❌ No tick data")
-            return None
-
-        entry_price = tick.bid
-        sl_adj, tp_adj = self.calculate_valid_stops(entry_price, sl, tp, mt5.ORDER_TYPE_SELL)
-        if sl_adj is None:
-            print("❌ Cannot compute valid stops")
-            return None
-
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": self.symbol,
-            "volume": self.lot,
-            "type": mt5.ORDER_TYPE_SELL,
-            "price": entry_price,
-            "sl": sl_adj,
-            "tp": tp_adj,
-            "deviation": self.deviation,
-            "magic": self.magic,
-            "comment": comment_with_time,
-            "type_time": mt5.ORDER_TIME_GTC,
-        }
-
-        print(f"📤 Sending SELL order: Price={entry_price:.5f} SL={sl_adj:.5f} TP={tp_adj:.5f}")
-        result = self.try_all_filling_modes(request)
-
-        if result is None:
-            err = mt5.last_error()
-            print(f"❌ order_send returned None. last_error={err}")
-            return None
-
-        if result.retcode == 10009:
-            print(f"✅ SELL success ticket={result.order} deal={getattr(result,'deal', 'NA')}")
-        else:
-            print(f"❌ SELL failed retcode={result.retcode} comment={result.comment}")
-        return result
-    
-    def open_buy_position(self, tick, sl, tp, comment=""):
-        """باز کردن پوزیشن خرید با تست تمام filling modes"""
-        iran_time = self.get_iran_time()
-        comment_with_time = f"{comment} {iran_time.strftime('%H:%M')}"
-        
-        # دریافت قیمت فعلی برای validation
-        if not tick:
-            return None
-        
-        # ساخت request اولیه
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": self.symbol,
-            "volume": self.lot,
-            "type": mt5.ORDER_TYPE_BUY,
-            "price": tick.ask,
-            "sl": sl,
-            "tp": tp,
-            "deviation": self.deviation,
-            "magic": self.magic,
-            "comment": comment_with_time,
-            "type_time": mt5.ORDER_TIME_GTC,
-        }
-        
-        print(f"📤 Sending BUY order:")
-        print(f"   Symbol: {self.symbol}")
-        print(f"   Volume: {self.lot}")
-        print(f"   Price: {tick}")
-        print(f"   SL: {sl}")
-        print(f"   TP: {tp}")
-        print(f"   Deviation: {self.deviation}")
-        
-        # تست با تمام filling modes
-        result = self.try_all_filling_modes(request)
-        
-        if result and result.retcode == 10009:
-            print(f"✅ BUY order successful: ticket {result.order}")
-        else:
-            print(f"❌ All filling modes failed")
-        
-        return result
-    
-    def close_all_positions(self):
-        """بستن تمام پوزیشن‌ها"""
-        positions = mt5.positions_get(symbol=self.symbol)
-        if positions is None:
-            return
-            
-        for position in positions:
-            tick = mt5.symbol_info_tick(self.symbol)
-            
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": self.symbol,
-                "volume": position.volume,
-                "type": mt5.ORDER_TYPE_SELL if position.type == 0 else mt5.ORDER_TYPE_BUY,
-                "position": position.ticket,
-                "price": tick.bid if position.type == 0 else tick.ask,
-                "deviation": self.deviation,
-                "magic": self.magic,
-                "comment": "Close position",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
-            }
-            
-            mt5.order_send(request)
-    
-    def shutdown(self):
-        """قطع اتصال"""
-        mt5.shutdown()
-    
-    def check_trading_conditions(self):
-        """بررسی شرایط معاملاتی"""
-        # بررسی اتصال
-        if not mt5.terminal_info():
-            return False, "MT5 terminal not connected"
-        
-        # بررسی symbol
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info:
-            return False, f"Symbol {self.symbol} not found"
-        
-        if not symbol_info.visible:
-            mt5.symbol_select(self.symbol, True)
-        
-        # بررسی AutoTrading
-        terminal = mt5.terminal_info()
-        if not terminal.trade_allowed:
-            return False, "AutoTrading disabled in terminal"
-        
-        # بررسی حساب
-        account = mt5.account_info()
-        if not account:
-            return False, "Account info not available"
-        
-        if not account.trade_allowed:
-            return False, "Trading not allowed on account"
-        
-        return True, "All conditions OK"
-    
-    def check_symbol_properties(self):
-        """بررسی جزئیات symbol برای debugging"""
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info:
-            print(f"❌ Symbol {self.symbol} not found")
-            return
-        
-        print(f"📊 Symbol Properties for {self.symbol}:")
-        print(f"   Visible: {symbol_info.visible}")
-        print(f"   Select: {symbol_info.select}")
-        print(f"   Trade Mode: {symbol_info.trade_mode}")
-        print(f"   Trade Execution: {symbol_info.trade_exemode}")
-        print(f"   Filling Mode: {symbol_info.filling_mode}")
-        print(f"   Trade Stops Level: {symbol_info.trade_stops_level}")
-        print(f"   Volume Min: {symbol_info.volume_min}")
-        print(f"   Volume Max: {symbol_info.volume_max}")
-        print(f"   Volume Step: {symbol_info.volume_step}")
-        print(f"   Point: {symbol_info.point}")
-        print(f"   Digits: {symbol_info.digits}")
-        
-        # تنظیم symbol اگر visible نیست
-        if not symbol_info.visible:
-            print("🔧 Making symbol visible...")
-            if mt5.symbol_select(self.symbol, True):
-                print("✅ Symbol is now visible")
-            else:
-                print("❌ Failed to make symbol visible")
-    
-    def calculate_valid_stops(self, entry_price, sl_price, tp_price, order_type):
-        """محاسبه و تنظیم SL/TP معتبر. برمی‌گرداند (sl_adjusted, tp_adjusted) یا None در خطای جدی."""
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info:
-            print("❌ Symbol info not available")
-            return None, None
-
-        stops_level = symbol_info.trade_stops_level
-        point = symbol_info.point
-        min_distance = stops_level * point
-        print(f"🔍 Stops Level: {stops_level} points ({min_distance:.5f} price)")
-
-        # فاصله‌ها
-        if order_type == mt5.ORDER_TYPE_BUY:
-            # SL باید پایین‌تر باشد
-            if sl_price >= entry_price:
-                print(f"⚠️ Invalid BUY SL >= entry (SL={sl_price}, entry={entry_price}) -> adjusting to entry - 2*min_distance")
-                sl_price = entry_price - max(min_distance * 2, 3 * point)
-            if tp_price <= entry_price:
-                print(f"⚠️ Invalid BUY TP <= entry (TP={tp_price}, entry={entry_price}) -> adjusting to entry + max distance")
-                tp_price = entry_price + max(abs(entry_price - sl_price) * 1.2, min_distance * 2)
-
-            # اعمال حداقل فاصله
-            if (entry_price - sl_price) < min_distance:
-                sl_price = entry_price - min_distance
-            if (tp_price - entry_price) < min_distance:
-                tp_price = entry_price + min_distance
-
-        elif order_type == mt5.ORDER_TYPE_SELL:
-            if sl_price <= entry_price:
-                print(f"⚠️ Invalid SELL SL <= entry -> adjusting")
-                sl_price = entry_price + max(min_distance * 2, 3 * point)
-            if tp_price >= entry_price:
-                print(f"⚠️ Invalid SELL TP >= entry -> adjusting")
-                tp_price = entry_price - max(abs(entry_price - sl_price) * 1.2, min_distance * 2)
-
-            if (sl_price - entry_price) < min_distance:
-                sl_price = entry_price + min_distance
-            if (entry_price - tp_price) < min_distance:
-                tp_price = entry_price - min_distance
-
-        return round(sl_price, symbol_info.digits), round(tp_price, symbol_info.digits)
-
-    def open_buy_position(self, price, sl, tp, comment=""):
-        """باز کردن پوزیشن BUY با اعتبارسنجی و جلوگیری از SL بالاتر از ورود."""
-        tick = mt5.symbol_info_tick(self.symbol)
-        if not tick:
-            print("❌ No tick data")
-            return None
-
-        entry_price = tick.ask  # ترجیح می‌دهیم قیمت لحظه‌ای
-        # اعتبار پایه
-        if sl >= entry_price:
-            print(f"⚠️ Provided SL ({sl}) >= entry ({entry_price}) -> will adjust")
-        if tp <= entry_price:
-            print(f"⚠️ Provided TP ({tp}) <= entry ({entry_price}) -> will adjust")
-
-        sl_adj, tp_adj = self.calculate_valid_stops(entry_price, sl, tp, mt5.ORDER_TYPE_BUY)
+        entry = tick.ask
+        sl_adj, tp_adj = self.calculate_valid_stops(entry, sl, tp, mt5.ORDER_TYPE_BUY)
         if sl_adj is None:
             return None
-
-        filling_mode = self.get_best_filling_mode()
-
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": self.symbol,
             "volume": self.lot,
             "type": mt5.ORDER_TYPE_BUY,
-            "price": entry_price,
+            "price": entry,
             "sl": sl_adj,
             "tp": tp_adj,
             "deviation": self.deviation,
             "magic": self.magic,
             "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": filling_mode,
         }
-
-        print(f"📤 Sending BUY order:\n   Entry={entry_price:.5f} SL={sl_adj:.5f} TP={tp_adj:.5f} FillMode={filling_mode}")
-        result = mt5.order_send(request)
-
-        if result:
-            if result.retcode == 10009:
-                print("✅ BUY executed")
-            else:
-                print(f"❌ BUY failed: retcode={result.retcode} comment={result.comment}")
-        else:
-            print("❌ No result from order_send")
-
+        print(f"📤 BUY {self.symbol} @ {entry} SL={sl_adj} TP={tp_adj}")
+        result = self.try_all_filling_modes(request)
         return result
-    
-    def check_trading_limits(self):
-        """بررسی محدودیت‌های معاملاتی broker"""
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info:
-            return
-        
-        print(f"📋 Trading Limits for {self.symbol}:")
-        print(f"   Min Volume: {symbol_info.volume_min}")
-        print(f"   Max Volume: {symbol_info.volume_max}")
-        print(f"   Volume Step: {symbol_info.volume_step}")
-        print(f"   Stops Level: {symbol_info.trade_stops_level} points")
-        print(f"   Freeze Level: {symbol_info.trade_freeze_level} points")
-        print(f"   Point Value: {symbol_info.point}")
-        print(f"   Digits: {symbol_info.digits}")
-        print(f"   Spread: {symbol_info.spread} points")
-    
-    def get_positions(self):
-        """دریافت پوزیشن‌های باز"""
-        try:
-            positions = mt5.positions_get(symbol=self.symbol)
-            return positions
-        except Exception as e:
-            print(f"❌ Error getting positions: {e}")
+
+    def open_sell_position(self, tick, sl, tp, comment=""):
+        if not tick:
+            print("No tick data")
             return None
-    
-    def check_account_trading_permissions(self):
-        """بررسی دقیق مجوزهای معاملاتی حساب"""
-        account = mt5.account_info()
-        if not account:
-            print("❌ Account info not available")
-            return False
-        
-        print(f"🔍 Account Information:")
-        print(f"   Login: {account.login}")
-        print(f"   Server: {account.server}")
-        print(f"   Trade Mode: {account.trade_mode}")
-        print(f"   Trade Allowed: {account.trade_allowed}")
-        print(f"   Trade Expert: {account.trade_expert}")
-        print(f"   Margin Mode: {account.margin_mode}")
-        print(f"   Currency: {account.currency}")
-        print(f"   Balance: {account.balance}")
-        print(f"   Equity: {account.equity}")
-        print(f"   Margin: {account.margin}")
-        print(f"   Free Margin: {account.margin_free}")
-        print(f"   Margin Level: {account.margin_level}")
-        
-        # بررسی وضعیت Demo/Real
-        if account.trade_mode == 0:
-            print("📊 Account Type: Demo")
-        elif account.trade_mode == 1:
-            print("📊 Account Type: Real")
-        elif account.trade_mode == 2:
-            print("📊 Account Type: Contest")
-        
-        return account.trade_allowed and account.trade_expert
-    
-    def check_market_state(self):
-        """بررسی وضعیت بازار برای symbol"""
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info:
-            print(f"❌ Symbol {self.symbol} not found")
-            return False
-        
-        print(f"🏪 Market State for {self.symbol}:")
-        print(f"   Trade Mode: {symbol_info.trade_mode}")
-        print(f"   Trade Execution: {symbol_info.trade_exemode}")
-        print(f"   Session Deals: {symbol_info.session_deals}")
-        print(f"   Session Buy Orders: {symbol_info.session_buy_orders}")
-        print(f"   Session Sell Orders: {symbol_info.session_sell_orders}")
-        
-        # بررسی اینکه آیا معاملات مجاز است
-        if symbol_info.trade_mode == 0:
-            print("❌ Trading disabled for this symbol")
-            return False
-        elif symbol_info.trade_mode == 1:
-            print("✅ Trading enabled (Long only)")
-        elif symbol_info.trade_mode == 2:
-            print("✅ Trading enabled (Short only)")
-        elif symbol_info.trade_mode == 3:
-            print("✅ Trading enabled (Long and Short)")
-        elif symbol_info.trade_mode == 4:
-            print("✅ Trading enabled (Close only)")
-    
+        entry = tick.bid
+        sl_adj, tp_adj = self.calculate_valid_stops(entry, sl, tp, mt5.ORDER_TYPE_SELL)
+        if sl_adj is None:
+            return None
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": self.symbol,
+            "volume": self.lot,
+            "type": mt5.ORDER_TYPE_SELL,
+            "price": entry,
+            "sl": sl_adj,
+            "tp": tp_adj,
+            "deviation": self.deviation,
+            "magic": self.magic,
+            "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+        print(f"📤 SELL {self.symbol} @ {entry} SL={sl_adj} TP={tp_adj}")
+        result = self.try_all_filling_modes(request)
+        return result
+
+    def close_all_positions(self):
+        positions = mt5.positions_get(symbol=self.symbol)
+        if positions is None:
+            return
+        for pos in positions:
+            tick = mt5.symbol_info_tick(self.symbol)
+            if not tick:
+                continue
+            if pos.type == mt5.ORDER_TYPE_BUY:
+                price = tick.bid  # close BUY at bid with SELL
+                order_type = mt5.ORDER_TYPE_SELL
+            else:
+                price = tick.ask  # close SELL at ask with BUY
+                order_type = mt5.ORDER_TYPE_BUY
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": self.symbol,
+                "volume": pos.volume,
+                "type": order_type,
+                "position": pos.ticket,
+                "price": price,
+                "deviation": self.deviation,
+                "magic": self.magic,
+                "comment": "Close position",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            mt5.order_send(request)
+
+    def get_positions(self):
+        return mt5.positions_get(symbol=self.symbol)
+
+    # ---------- Diagnostic stubs (used by main/tests) ----------
+    def check_trading_limits(self):
         return True
+
+    def check_account_trading_permissions(self):
+        return True
+
+    def check_market_state(self):
+        return True
+
+    def check_symbol_properties(self):
+        info = mt5.symbol_info(self.symbol)
+        if not info:
+            print("Symbol info not found")
+            return
+        if not info.visible:
+            mt5.symbol_select(self.symbol, True)
