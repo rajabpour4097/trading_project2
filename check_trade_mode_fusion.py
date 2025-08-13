@@ -31,8 +31,8 @@ if account_info:
     print(f"Trading Allowed: {account_info.trade_allowed}")
     print(f"Expert Trading Allowed: {account_info.trade_expert}")
 
-# Get GBPUSD symbol info
-symbol = "GBPUSD"
+# Get USDJPY symbol info
+symbol = "USDJPY"
 symbol_info = mt5.symbol_info(symbol)
 if symbol_info:
     print(f"\n=== {symbol} Symbol Info ===")
