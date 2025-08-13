@@ -85,4 +85,5 @@ def test_sell_position():
     connector.shutdown()
     print("✅ Test completed")
 
-if __name__ ==
+if __name__ == "__main__":
+    test_sell_position()
