@@ -161,7 +161,7 @@ class MT5Connector:
                 return result
         return result  # return last attempt
 
-    # ---------- Trading ----------
+    # ---------- Trading -----------
     def open_buy_position(self, tick, sl, tp, comment="", volume=None, risk_pct=None):
         if not tick:
             print("No tick data")
@@ -222,7 +222,7 @@ class MT5Connector:
             tick = mt5.symbol_info_tick(self.symbol)
             if not tick:
                 continue
-            if pos.type == mt5.ORDER_TYPE_BUY:
+            if pos.type == mt5.POSITION_TYPE_BUY:
                 price = tick.bid  # close BUY at bid with SELL
                 order_type = mt5.ORDER_TYPE_SELL
             else:

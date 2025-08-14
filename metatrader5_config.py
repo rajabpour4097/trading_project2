@@ -52,6 +52,7 @@ MT5_CONFIG = {
     'max_spread': 3.0,          # حداکثر spread مجاز (pip)
     'min_balance': 100,         # حداقل موجودی حساب
     'max_daily_trades': 10,     # حداکثر معامله در روز
+    'commission_per_lot_side': 2.25,
     'trading_hours': IRAN_ACTIVE_HOURS,  # بهترین ساعات بر اساس ایران
 }
 

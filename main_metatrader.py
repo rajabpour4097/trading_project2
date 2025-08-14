@@ -352,7 +352,8 @@ def main():
                         tick=last_tick,
                         sl=stop,
                         tp=reward_end,
-                        comment=f"Bullish Swing {swing_type}"
+                        comment=f"Bullish Swing {swing_type}",
+                        risk_pct=0.01  # مثلا 1% ریسک
                     )
                     # ارسال ایمیل غیرمسدودکننده
                     try:
@@ -421,7 +422,8 @@ def main():
                         tick=last_tick,
                         sl=stop,
                         tp=reward_end,
-                        comment=f"Bearish Swing {swing_type}"
+                        comment=f"Bearish Swing {swing_type}",
+                        risk_pct=0.01  # مثلا 1% ریسک
                     )
                     
                     # ارسال ایمیل غیرمسدودکننده
