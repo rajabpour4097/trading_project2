@@ -16,6 +16,8 @@ class MT5Connector:
         self.max_spread = cfg['max_spread']
         self.min_balance = cfg['min_balance']
         self.trading_hours = cfg['trading_hours']
+        # کمیسیون هر سمت (per-side) به‌ازای هر 1 لات، واحد: ارز حساب. اگر ندادی 0.
+        self.commission_per_lot_side = cfg.get('commission_per_lot_side', 0.0)
         self.iran_tz = pytz.timezone('Asia/Tehran')
         self.utc_tz = pytz.UTC
 
@@ -160,7 +162,7 @@ class MT5Connector:
         return result  # return last attempt
 
     # ---------- Trading ----------
-    def open_buy_position(self, tick, sl, tp, comment=""):
+    def open_buy_position(self, tick, sl, tp, comment="", volume=None, risk_pct=None):
         if not tick:
             print("No tick data")
             return None
@@ -168,10 +170,11 @@ class MT5Connector:
         sl_adj, tp_adj = self.calculate_valid_stops(entry, sl, tp, mt5.ORDER_TYPE_BUY)
         if sl_adj is None:
             return None
+        vol = self._resolve_volume(volume, entry, sl_adj, tick, risk_pct)
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": self.symbol,
-            "volume": self.lot,
+            "volume": vol,
             "type": mt5.ORDER_TYPE_BUY,
             "price": entry,
             "sl": sl_adj,
@@ -181,11 +184,11 @@ class MT5Connector:
             "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
         }
-        print(f"📤 BUY {self.symbol} @ {entry} SL={sl_adj} TP={tp_adj}")
+        print(f"📤 BUY {self.symbol} @ {entry} VOL={vol} SL={sl_adj} TP={tp_adj}")
         result = self.try_all_filling_modes(request)
         return result
 
-    def open_sell_position(self, tick, sl, tp, comment=""):
+    def open_sell_position(self, tick, sl, tp, comment="", volume=None, risk_pct=None):
         if not tick:
             print("No tick data")
             return None
@@ -193,10 +196,11 @@ class MT5Connector:
         sl_adj, tp_adj = self.calculate_valid_stops(entry, sl, tp, mt5.ORDER_TYPE_SELL)
         if sl_adj is None:
             return None
+        vol = self._resolve_volume(volume, entry, sl_adj, tick, risk_pct)
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": self.symbol,
-            "volume": self.lot,
+            "volume": vol,
             "type": mt5.ORDER_TYPE_SELL,
             "price": entry,
             "sl": sl_adj,
@@ -206,7 +210,7 @@ class MT5Connector:
             "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
         }
-        print(f"📤 SELL {self.symbol} @ {entry} SL={sl_adj} TP={tp_adj}")
+        print(f"📤 SELL {self.symbol} @ {entry} VOL={vol} SL={sl_adj} TP={tp_adj}")
         result = self.try_all_filling_modes(request)
         return result
 
@@ -259,3 +263,50 @@ class MT5Connector:
             return
         if not info.visible:
             mt5.symbol_select(self.symbol, True)
+
+    # ---------- Volume helpers ----------
+    def _normalize_volume(self, vol: float) -> float:
+        info = mt5.symbol_info(self.symbol)
+        if not info:
+            return vol
+        step = info.volume_step or 0.01
+        vmin = info.volume_min or step
+        vmax = info.volume_max or 100.0
+        steps = round(vol / step)
+        vol_rounded = steps * step
+        return max(vmin, min(vmax, vol_rounded))
+
+    def calculate_volume_by_risk(self, entry: float, sl: float, tick, risk_pct: float = 0.01) -> float:
+        """Position sizing with price risk + current spread + round-trip commission."""
+        acc = mt5.account_info()
+        info = mt5.symbol_info(self.symbol)
+        if not acc or not info or not info.tick_size or not info.tick_value:
+            return self.lot
+
+        # monetary risk budget
+        risk_money = acc.balance * float(risk_pct)
+
+        # price risk to stop per 1 lot
+        risk_points = abs(entry - sl) / info.tick_size
+        price_risk_per_lot = risk_points * info.tick_value
+
+        # spread cost approximation (entry spread)
+        spread_points = abs(getattr(tick, 'ask', 0.0) - getattr(tick, 'bid', 0.0)) / info.tick_size
+        spread_cost_per_lot = spread_points * info.tick_value
+
+        # round-trip commission (open + close) per 1 lot (account currency)
+        commission_rt_per_lot = 2.0 * float(getattr(self, 'commission_per_lot_side', 0.0))
+
+        total_cost_per_lot = price_risk_per_lot + spread_cost_per_lot + commission_rt_per_lot
+        if total_cost_per_lot <= 0:
+            return self.lot
+
+        vol = risk_money / total_cost_per_lot
+        return self._normalize_volume(vol)
+
+    def _resolve_volume(self, volume, entry, sl, tick, risk_pct):
+        if volume is not None:
+            return self._normalize_volume(volume)
+        if risk_pct is not None:
+            return self.calculate_volume_by_risk(entry, sl, tick, risk_pct)
+        return self.lot
