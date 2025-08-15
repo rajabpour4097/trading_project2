@@ -108,16 +108,57 @@ class MT5Connector:
         print(f"Filling mode raw: {info.filling_mode}")
         return info.filling_mode
 
-    def get_supported_filling_mode(self):
+    def get_supported_filling_modes(self):
         info = mt5.symbol_info(self.symbol)
         if not info:
-            return None
-        # Prefer IOC, then FOK, else RETURN
-        if info.filling_mode & mt5.ORDER_FILLING_IOC:
-            return mt5.ORDER_FILLING_IOC
-        if info.filling_mode & mt5.ORDER_FILLING_FOK:
-            return mt5.ORDER_FILLING_FOK
-        return mt5.ORDER_FILLING_RETURN
+            return []
+        fm = getattr(info, 'filling_mode', 0)
+        modes = []
+        for m in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN):
+            try:
+                # برخی بروکرها bitmask می‌دهند
+                if (fm & m) == m:
+                    modes.append(m)
+            except Exception:
+                # برخی فقط یک مقدار منفرد می‌دهند
+                if fm == m:
+                    modes.append(m)
+        return modes
+
+    def try_all_filling_modes(self, request):
+        tried = []
+        modes = self.get_supported_filling_modes()
+
+        # 1) اول مدهای اعلام‌شده‌ی بروکر
+        for m in modes:
+            req = dict(request)
+            req["type_filling"] = m
+            res = mt5.order_send(req)
+            tried.append((m, getattr(res, 'retcode', None)))
+            if res and res.retcode in (RET_OK, mt5.TRADE_RETCODE_PLACED):
+                return res
+
+        # 2) یک بار بدون type_filling (auto)
+        req = dict(request)
+        req.pop("type_filling", None)
+        res = mt5.order_send(req)
+        tried.append(("auto", getattr(res, 'retcode', None)))
+        if res and res.retcode in (RET_OK, mt5.TRADE_RETCODE_PLACED):
+            return res
+
+        # 3) در نهایت brute-force برای حالتی که flags نادرست گزارش شده
+        for m in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN):
+            if m in modes:
+                continue
+            req = dict(request)
+            req["type_filling"] = m
+            res = mt5.order_send(req)
+            tried.append((m, getattr(res, 'retcode', None)))
+            if res and res.retcode in (RET_OK, mt5.TRADE_RETCODE_PLACED):
+                return res
+
+        print(f"[order_send] filling mode attempts: {tried}")
+        return res  # آخرین نتیجه
 
     # ---------- Stop validation ----------
     def calculate_valid_stops(self, entry_price, sl_price, tp_price, order_type):
@@ -151,15 +192,39 @@ class MT5Connector:
 
     # ---------- Order sending core ----------
     def try_all_filling_modes(self, request):
-        for mode in (mt5.ORDER_FILLING_IOC,
-                     mt5.ORDER_FILLING_FOK,
-                     mt5.ORDER_FILLING_RETURN):
+        tried = []
+        modes = self.get_supported_filling_modes()
+
+        # 1) اول مدهای اعلام‌شده‌ی بروکر
+        for m in modes:
             req = dict(request)
-            req["type_filling"] = mode
-            result = mt5.order_send(req)
-            if result and result.retcode in (RET_OK, mt5.TRADE_RETCODE_PLACED):
-                return result
-        return result  # return last attempt
+            req["type_filling"] = m
+            res = mt5.order_send(req)
+            tried.append((m, getattr(res, 'retcode', None)))
+            if res and res.retcode in (RET_OK, mt5.TRADE_RETCODE_PLACED):
+                return res
+
+        # 2) یک بار بدون type_filling (auto)
+        req = dict(request)
+        req.pop("type_filling", None)
+        res = mt5.order_send(req)
+        tried.append(("auto", getattr(res, 'retcode', None)))
+        if res and res.retcode in (RET_OK, mt5.TRADE_RETCODE_PLACED):
+            return res
+
+        # 3) در نهایت brute-force برای حالتی که flags نادرست گزارش شده
+        for m in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN):
+            if m in modes:
+                continue
+            req = dict(request)
+            req["type_filling"] = m
+            res = mt5.order_send(req)
+            tried.append((m, getattr(res, 'retcode', None)))
+            if res and res.retcode in (RET_OK, mt5.TRADE_RETCODE_PLACED):
+                return res
+
+        print(f"[order_send] filling mode attempts: {tried}")
+        return res  # آخرین نتیجه
 
     # ---------- Trading ----------
     def open_buy_position(self, tick, sl, tp, comment="", volume=None, risk_pct=None):
