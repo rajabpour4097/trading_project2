@@ -335,13 +335,24 @@ def main():
                     log(f'Start long position income {cache_data.iloc[-1].name}', color='blue')
                     log(f'current_open_point (market ask): {buy_entry_price}', color='blue')
 
-                    # تعیین stop بر اساس فاصله فیب، هرچی بود وارد معامله شو
-                    if abs(state.fib_levels['0.9'] - buy_entry_price) * 10000 < 2:
-                        stop = state.fib_levels['1.0']
-                        log(f'stop = fib_levels[1.0] {stop}', color='red')
-                    else:
-                        stop = state.fib_levels['0.9']
-                        log(f'stop = fib_levels[0.9] {stop}', color='red')
+                    pip_size = _pip_size_for(MT5_CONFIG['symbol'])
+                    two_pips = 2.0 * pip_size
+                    min_dist = _min_stop_distance(MT5_CONFIG['symbol'])
+
+                    # معیار درستِ 2 پیپ
+                    is_close_to_09 = abs(state.fib_levels['0.9'] - buy_entry_price) <= two_pips
+
+                    candidate_sl = state.fib_levels['1.0'] if is_close_to_09 else state.fib_levels['0.9']
+
+                    # گارد جهت: برای BUY باید زیر entry باشد؛ اگر نبود به 1.0 برگرد یا حداقل فاصله را اعمال کن
+                    if candidate_sl >= buy_entry_price:
+                        candidate_sl = state.fib_levels['1.0']
+                    if candidate_sl >= buy_entry_price:
+                        candidate_sl = buy_entry_price - max(two_pips, min_dist)  # آخرین پناهگاه
+
+                    stop = float(candidate_sl)
+                    log(f'stop (final) = {stop}', color='red')
+
                     stop_distance = abs(buy_entry_price - stop)
                     reward_end = buy_entry_price + (stop_distance * win_ratio)
                     log(f'stop = {stop}', color='green')
@@ -405,13 +416,22 @@ def main():
                     log(f'Start short position income {cache_data.iloc[-1].name}', color='red')
                     log(f'current_open_point (market bid): {sell_entry_price}', color='red')
 
-                    # تعیین stop بر اساس فاصله فیب، هرچی بود وارد معامله شو
-                    if abs(state.fib_levels['0.9'] - sell_entry_price) * 10000 < 2:
-                        stop = state.fib_levels['1.0']
-                        log(f'stop = fib_levels[1.0] {stop}', color='red')
-                    else:
-                        stop = state.fib_levels['0.9']
-                        log(f'stop = fib_levels[0.9] {stop}', color='red')
+                    pip_size = _pip_size_for(MT5_CONFIG['symbol'])
+                    two_pips = 2.0 * pip_size
+                    min_dist = _min_stop_distance(MT5_CONFIG['symbol'])
+
+                    is_close_to_09 = abs(state.fib_levels['0.9'] - sell_entry_price) <= two_pips
+                    candidate_sl = state.fib_levels['1.0'] if is_close_to_09 else state.fib_levels['0.9']
+
+                    # گارد جهت: برای SELL باید بالای entry باشد
+                    if candidate_sl <= sell_entry_price:
+                        candidate_sl = state.fib_levels['1.0']
+                    if candidate_sl <= sell_entry_price:
+                        candidate_sl = sell_entry_price + max(two_pips, min_dist)
+
+                    stop = float(candidate_sl)
+                    log(f'stop (final) = {stop}', color='red')
+
                     stop_distance = abs(sell_entry_price - stop)
                     reward_end = sell_entry_price - (stop_distance * win_ratio)
                     log(f'stop = {stop}', color='red')
@@ -496,6 +516,21 @@ def main():
 
     mt5_conn.shutdown()
     print("🔌 MT5 connection closed")
+
+def _pip_size_for(symbol: str) -> float:
+    info = mt5.symbol_info(symbol)
+    if not info:
+        return 0.0001
+    # برای 5/3 رقمی: 1 pip = 10 * point
+    return info.point * (10.0 if info.digits in (3, 5) else 1.0)
+
+def _min_stop_distance(symbol: str) -> float:
+    info = mt5.symbol_info(symbol)
+    if not info:
+        return 0.0003
+    point = info.point
+    # حداقل فاصله مجاز بروکر (stops_level) یا 3 پوینت به‌عنوان فfallback
+    return max((getattr(info, 'trade_stops_level', 0) or 0) * point, 3 * point)
 
 if __name__ == "__main__":
     main()
