@@ -45,15 +45,14 @@ FULL_TIME_IRAN = {
 # تنظیمات MT5
 MT5_CONFIG = {
     'symbol': 'EURUSD',
-    'lot_size': 0.01,           # حجم معامله
-    'win_ratio': 1.2,           # نسبت سود به ضرر
-    'magic_number': 234000,     # شماره مجیک
-    'deviation': 20,            # انحراف قیمت مجاز
-    'max_spread': 3.0,          # حداکثر spread مجاز (pip)
-    'min_balance': 100,         # حداقل موجودی حساب
-    'max_daily_trades': 10,     # حداکثر معامله در روز
-    'commission_per_lot_side': 2.25,
-    'trading_hours': IRAN_ACTIVE_HOURS,  # بهترین ساعات بر اساس ایران
+    'lot_size': 0.01,
+    'win_ratio': 1.2,
+    'magic_number': 234000,
+    'deviation': 20,
+    'max_spread': 3.0,
+    'min_balance': 100,
+    'max_daily_trades': 10,
+    'trading_hours': IRAN_ACTIVE_HOURS,
 }
 
 # تنظیمات استراتژی

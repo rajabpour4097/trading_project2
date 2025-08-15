@@ -17,7 +17,7 @@ class MT5Connector:
         self.min_balance = cfg['min_balance']
         self.trading_hours = cfg['trading_hours']
         # کمیسیون هر سمت (per-side) به‌ازای هر 1 لات، واحد: ارز حساب. اگر ندادی 0.
-        self.commission_per_lot_side = cfg.get('commission_per_lot_side', 0.0)
+        # self.commission_per_lot_side = cfg.get('commission_per_lot_side', 0.0)  # removed
         self.iran_tz = pytz.timezone('Asia/Tehran')
         self.utc_tz = pytz.UTC
 
@@ -294,7 +294,7 @@ class MT5Connector:
         return tick_size, tick_value
 
     def calculate_volume_by_risk(self, entry: float, sl: float, tick, risk_pct: float = 0.01) -> float:
-        """Position sizing with price risk + current spread + round-trip commission."""
+        """Position sizing with price risk + current spread (commission removed)."""
         acc = mt5.account_info()
         info = mt5.symbol_info(self.symbol)
         if not acc or not info:
@@ -304,21 +304,16 @@ class MT5Connector:
         if not tick_size or not tick_value:
             return self.lot
 
-        # monetary risk budget
         risk_money = acc.balance * float(risk_pct)
 
-        # price risk to stop per 1 lot
         risk_points = abs(entry - sl) / float(tick_size)
         price_risk_per_lot = risk_points * float(tick_value)
 
-        # spread cost approximation (entry spread)
         spread_points = abs(getattr(tick, 'ask', 0.0) - getattr(tick, 'bid', 0.0)) / float(tick_size)
         spread_cost_per_lot = spread_points * float(tick_value)
 
-        # round-trip commission (open + close) per 1 lot (account currency)
-        commission_rt_per_lot = 2.0 * float(getattr(self, 'commission_per_lot_side', 0.0))
-
-        total_cost_per_lot = price_risk_per_lot + spread_cost_per_lot + commission_rt_per_lot
+        # commission removed
+        total_cost_per_lot = price_risk_per_lot + spread_cost_per_lot
         if total_cost_per_lot <= 0:
             return self.lot
 
