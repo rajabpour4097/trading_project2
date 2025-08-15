@@ -161,7 +161,7 @@ class MT5Connector:
                 return result
         return result  # return last attempt
 
-    # ---------- Trading -----------
+    # ---------- Trading ----------
     def open_buy_position(self, tick, sl, tp, comment="", volume=None, risk_pct=None):
         if not tick:
             print("No tick data")
@@ -276,23 +276,44 @@ class MT5Connector:
         vol_rounded = steps * step
         return max(vmin, min(vmax, vol_rounded))
 
+    def _get_tick_specs(self, info):
+        """
+        Resolve tick_size and tick_value with safe fallbacks:
+        - Prefer trade_tick_size/trade_tick_value
+        - Fallback to tick_size/tick_value if broker exposes them
+        - Finally fallback to point and contract-size approximation
+        """
+        tick_size = getattr(info, 'trade_tick_size', None) or getattr(info, 'tick_size', None) or getattr(info, 'point', None)
+        tick_value = getattr(info, 'trade_tick_value', None) or getattr(info, 'tick_value', None)
+        if tick_value is None:
+            contract = getattr(info, 'trade_contract_size', None)
+            if contract and tick_size:
+                # Approximation: value of one tick_size move for 1 lot in account currency
+                # Accurate for USD-quoted pairs on USD accounts (e.g., EURUSD/USD account).
+                tick_value = contract * tick_size
+        return tick_size, tick_value
+
     def calculate_volume_by_risk(self, entry: float, sl: float, tick, risk_pct: float = 0.01) -> float:
         """Position sizing with price risk + current spread + round-trip commission."""
         acc = mt5.account_info()
         info = mt5.symbol_info(self.symbol)
-        if not acc or not info or not info.tick_size or not info.tick_value:
+        if not acc or not info:
+            return self.lot
+
+        tick_size, tick_value = self._get_tick_specs(info)
+        if not tick_size or not tick_value:
             return self.lot
 
         # monetary risk budget
         risk_money = acc.balance * float(risk_pct)
 
         # price risk to stop per 1 lot
-        risk_points = abs(entry - sl) / info.tick_size
-        price_risk_per_lot = risk_points * info.tick_value
+        risk_points = abs(entry - sl) / float(tick_size)
+        price_risk_per_lot = risk_points * float(tick_value)
 
         # spread cost approximation (entry spread)
-        spread_points = abs(getattr(tick, 'ask', 0.0) - getattr(tick, 'bid', 0.0)) / info.tick_size
-        spread_cost_per_lot = spread_points * info.tick_value
+        spread_points = abs(getattr(tick, 'ask', 0.0) - getattr(tick, 'bid', 0.0)) / float(tick_size)
+        spread_cost_per_lot = spread_points * float(tick_value)
 
         # round-trip commission (open + close) per 1 lot (account currency)
         commission_rt_per_lot = 2.0 * float(getattr(self, 'commission_per_lot_side', 0.0))
