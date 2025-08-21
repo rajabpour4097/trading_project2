@@ -44,9 +44,16 @@ def build_param_grid(args) -> List[Dict]:
     rrs = _parse_list(args.rrs, float)
     minlegs = _parse_list(args.minlegs, int)
     risk_pcts = _parse_list(args.risk_pcts, float)
+    fib_entry_mins = _parse_list(args.fib_entry_mins, float) if args.use_external else [None]
+    fib_entry_maxs = _parse_list(args.fib_entry_maxs, float) if args.use_external else [None]
 
     grid = []
-    for th, win, la, rr, ml, rp in itertools.product(thresholds, windows, lookaheads, rrs, minlegs, risk_pcts):
+    for th, win, la, rr, ml, rp, fib_min, fib_max in itertools.product(
+            thresholds, windows, lookaheads, rrs, minlegs, risk_pcts, fib_entry_mins, fib_entry_maxs):
+        if args.use_external:
+            # validate fib band
+            if fib_min is None or fib_max is None or fib_min >= fib_max:
+                continue
         grid.append({
             'threshold_points': th,
             'window_size': win,
@@ -54,6 +61,8 @@ def build_param_grid(args) -> List[Dict]:
             'rr': rr,
             'min_leg_distance_points': ml,
             'risk_pct': rp,
+            'fib_entry_min': fib_min,
+            'fib_entry_max': fib_max,
         })
     return grid
 
@@ -121,6 +130,9 @@ def main():
     ap.add_argument('--rrs', default='1.2')
     ap.add_argument('--minlegs', default='4')
     ap.add_argument('--risk-pcts', default='0.01')
+    ap.add_argument('--use-external', action='store_true', help='Use real strategy logic (get_legs, swings, fibo)')
+    ap.add_argument('--fib-entry-mins', default='0.705', help='Comma list (only if --use-external)')
+    ap.add_argument('--fib-entry-maxs', default='0.9', help='Comma list (only if --use-external)')
     ap.add_argument('--initial-balance', type=float, default=10000.0)
     ap.add_argument('--price-scale', type=int, default=100000)
     ap.add_argument('--sample', type=int, default=0, help='Random sample size (0 = use full grid)')
@@ -129,6 +141,7 @@ def main():
     ap.add_argument('--outdir', default='backtest/opt_results')
     ap.add_argument('--progress-every', type=int, default=1, help='Update progress display every N configs')
     ap.add_argument('--no-dynamic-progress', action='store_true', help='Disable in-place dynamic progress line')
+    ap.add_argument('--quiet', action='store_true', help='Suppress progress lines; only print final outputs')
     args = ap.parse_args()
 
     # Load data sets
@@ -143,10 +156,11 @@ def main():
         print('No valid datasets loaded. Abort.')
         return
 
-    print("Loaded datasets:")
-    for p, df in datasets:
-        tfm = infer_timeframe_minutes(df)
-        print(f"- {p}: rows={len(df)} timeframe≈{tfm}m")
+    if not args.quiet:
+        print("Loaded datasets:")
+        for p, df in datasets:
+            tfm = infer_timeframe_minutes(df)
+            print(f"- {p}: rows={len(df)} timeframe≈{tfm}m")
 
     grid = build_param_grid(args)
     total_grid = len(grid)
@@ -156,7 +170,8 @@ def main():
     if args.max_configs > 0 and len(grid) > args.max_configs:
         grid = grid[:args.max_configs]
 
-    print(f"Parameter configs to test: {len(grid)} (original grid size {total_grid})")
+    if not args.quiet:
+        print(f"Parameter configs to test: {len(grid)} (original grid size {total_grid})")
 
     results = []
     start = time.time()
@@ -172,6 +187,10 @@ def main():
             price_scale=args.price_scale,
             initial_balance=args.initial_balance,
             risk_pct=params['risk_pct'],
+            use_external_logic=args.use_external,
+            fib_entry_min=params.get('fib_entry_min') if args.use_external else 0.705,
+            fib_entry_max=params.get('fib_entry_max') if args.use_external else 0.9,
+            external_quiet=args.quiet,
         )
         per_file_summaries = []
         for path, df in datasets:
@@ -186,7 +205,11 @@ def main():
             'rr': params['rr'],
             'min_leg_distance_points': params['min_leg_distance_points'],
             'risk_pct': params['risk_pct'],
+            'use_external_logic': args.use_external,
         })
+        if args.use_external:
+            agg['fib_entry_min'] = params.get('fib_entry_min')
+            agg['fib_entry_max'] = params.get('fib_entry_max')
         # استخراج میانگین تایم‌فریم برای گزارش
         tf_vals = [s.get('timeframe_minutes') for s in per_file_summaries if s.get('timeframe_minutes')]
         if tf_vals:
@@ -195,21 +218,22 @@ def main():
         agg['score'] = score_rule(agg)
         results.append(agg)
         # Progress / ETA
-        if idx % args.progress_every == 0 or idx == len(grid):
-            elapsed = time.time() - start
-            avg_per = elapsed / idx
-            remaining = (len(grid) - idx) * avg_per
-            pct = idx / len(grid) * 100.0
-            line = (f"[{idx}/{len(grid)}] {pct:5.1f}% | elapsed {elapsed:7.1f}s | "
-                    f"ETA {remaining:7.1f}s | avg {avg_per*1000:6.1f} ms/conf | last score {agg['score']:.3f}")
-            if not args.no_dynamic_progress:
-                pad = max(0, last_print_len - len(line))
-                print('\r' + line + ' ' * pad, end='', flush=True)
-                last_print_len = len(line)
-            else:
-                print(line)
+        if not args.quiet:
+            if idx % args.progress_every == 0 or idx == len(grid):
+                elapsed = time.time() - start
+                avg_per = elapsed / idx
+                remaining = (len(grid) - idx) * avg_per
+                pct = idx / len(grid) * 100.0
+                line = (f"[{idx}/{len(grid)}] {pct:5.1f}% | elapsed {elapsed:7.1f}s | "
+                        f"ETA {remaining:7.1f}s | avg {avg_per*1000:6.1f} ms/conf | last score {agg['score']:.3f}")
+                if not args.no_dynamic_progress:
+                    pad = max(0, last_print_len - len(line))
+                    print('\r' + line + ' ' * pad, end='', flush=True)
+                    last_print_len = len(line)
+                else:
+                    print(line)
 
-    if not args.no_dynamic_progress:
+    if not args.quiet and not args.no_dynamic_progress:
         print()  # newline after dynamic progress
 
     if not results:
@@ -229,13 +253,18 @@ def main():
     with open(summary_json, 'w', encoding='utf-8') as f:
         json.dump(top_n, f, ensure_ascii=False, indent=2)
 
-    print(f"\n✅ Saved full results -> {full_csv}")
-    print(f"✅ Saved top {len(top_n)} -> {summary_json}")
-    print("Best config:")
-    best = top_n[0]
-    for k in ['threshold_points','window_size','lookahead','rr','min_leg_distance_points','risk_pct','win_rate_pct','net_R','profit_factor','max_drawdown_R','score']:
-        if k in best:
-            print(f"- {k}: {best[k]}")
+    if not args.quiet:
+        print(f"\n✅ Saved full results -> {full_csv}")
+        print(f"✅ Saved top {len(top_n)} -> {summary_json}")
+        print("Best config:")
+        best = top_n[0]
+        for k in ['threshold_points','window_size','lookahead','rr','min_leg_distance_points','risk_pct','fib_entry_min','fib_entry_max','win_rate_pct','net_R','profit_factor','max_drawdown_R','score']:
+            if k in best:
+                print(f"- {k}: {best[k]}")
+    else:
+        # Quiet mode concise output (single line summary)
+        best = top_n[0]
+        print(f"BEST threshold={best.get('threshold_points')} win_rate={best.get('win_rate_pct')} net_R={best.get('net_R')} PF={best.get('profit_factor')} DD_R={best.get('max_drawdown_R')} score={round(best.get('score',0),3)} -> {summary_json}")
 
 
 if __name__ == '__main__':

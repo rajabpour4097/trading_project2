@@ -21,6 +21,10 @@ def main():
     ap.add_argument("--outdir", default="backtest/results")
     ap.add_argument("--initial-balance", type=float, default=10000.0, help="starting balance for equity simulation")
     ap.add_argument("--risk-pct", type=float, default=0.01, help="risk per trade as fraction of equity (e.g. 0.01 = 1%)")
+    ap.add_argument("--use-external", action="store_true", help="Use real strategy logic (get_legs, swings, fibo)")
+    ap.add_argument("--fib-entry-min", type=float, default=0.705, help="Min fib retracement ratio for entry (external logic)")
+    ap.add_argument("--fib-entry-max", type=float, default=0.9, help="Max fib retracement ratio for entry (external logic)")
+    ap.add_argument("--quiet-ext", action="store_true", help="Suppress prints from external strategy functions")
     args = ap.parse_args()
 
     cfg = BacktestConfig(
@@ -33,6 +37,10 @@ def main():
         price_scale=args.scale,
     initial_balance=args.initial_balance,
     risk_pct=args.risk_pct,
+    use_external_logic=args.use_external,
+    fib_entry_min=args.fib_entry_min,
+    fib_entry_max=args.fib_entry_max,
+    external_quiet=args.quiet_ext,
     )
 
     df = load_ohlc_csv(args.csv)

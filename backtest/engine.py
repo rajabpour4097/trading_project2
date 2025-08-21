@@ -32,6 +32,10 @@ class BacktestConfig:
     price_scale: int = 100000            # 5-digit FX scaling for points
     initial_balance: float = 10_000.0    # starting balance for equity simulation
     risk_pct: float = 0.01               # fraction of equity risked per trade (1% default)
+    use_external_logic: bool = False     # if True use real bot logic (get_legs, swings, fibo)
+    fib_entry_min: float = 0.705         # min fib retracement (only for external logic)
+    fib_entry_max: float = 0.9           # max fib retracement
+    external_quiet: bool = False         # suppress stdout from external strategy functions
 
 
 @dataclass
@@ -56,6 +60,26 @@ class Trade:
 class BacktestEngine:
     def __init__(self, config: BacktestConfig):
         self.cfg = config
+        # Lazy import external strategy components; keep engine standalone if unavailable
+        self._external_available = False
+        if self.cfg.use_external_logic:
+            try:
+                # Root path insertion so scripts run from backtest/ still find top-level modules
+                import sys, os
+                root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+                if root_dir not in sys.path:
+                    sys.path.insert(0, root_dir)
+                from get_legs import get_legs as external_get_legs  # type: ignore
+                from swing import get_swing_points  # type: ignore
+                from fibo_calculate import fibonacci_retracement  # type: ignore
+                self._external_get_legs = external_get_legs
+                self._external_get_swing_points = get_swing_points
+                self._external_fibo = fibonacci_retracement
+                self._external_available = True
+            except Exception as e:  # pragma: no cover - defensive
+                # Fallback silently to internal logic
+                self._external_available = False
+                self._external_import_error = str(e)
 
     @staticmethod
     def _ensure_status(df: pd.DataFrame) -> pd.DataFrame:
@@ -69,6 +93,8 @@ class BacktestEngine:
         """Simple leg detector similar to backtest/import sys_small.py.
         Threshold measured in points using cfg.price_scale.
         """
+        if self.cfg.use_external_logic and self._external_available:
+            return self._detect_legs_external(data)
         if data.empty:
             return []
         legs: List[Dict] = []
@@ -113,6 +139,8 @@ class BacktestEngine:
         """Very simple swing signal: require 3 last legs and a direction change.
         Entry = last close; Stop = previous leg end; Target = entry +/- rr*|entry-stop|.
         """
+        if self.cfg.use_external_logic and self._external_available:
+            return self._build_signal_external(window, legs)
         if len(legs) < 3:
             return None
         last3 = legs[-3:]
@@ -223,6 +251,88 @@ class BacktestEngine:
         self._apply_equity(trades)
         summary = self._summarize(trades)
         return trades, summary
+
+    # ------------------- External strategy integration ------------------- #
+    def _detect_legs_external(self, data: pd.DataFrame) -> List[Dict]:
+        """Use user's real get_legs() implementation.
+        Note: Original get_legs scales difference by *10000; we pass threshold_points directly.
+        Returns list of legs with keys start, end, start_value, end_value, direction (up/down).
+        """
+        try:
+            if self.cfg.external_quiet:
+                import io, contextlib, sys  # local import to avoid overhead when not used
+                dummy = io.StringIO()
+                with contextlib.redirect_stdout(dummy):
+                    legs = self._external_get_legs(data, custom_threshold=self.cfg.threshold_points)
+            else:
+                legs = self._external_get_legs(data, custom_threshold=self.cfg.threshold_points)
+            return legs if isinstance(legs, list) else []
+        except Exception:  # pragma: no cover
+            return []
+
+    def _build_signal_external(self, window: pd.DataFrame, legs: List[Dict]) -> Optional[Dict]:
+        """Build signal using swing & fibonacci logic.
+
+        Process:
+        - Take last 3 legs -> test swing (bullish/bearish) using get_swing_points
+        - Compute fib retracement on impulse leg (leg[0] of the 3) start->end
+        - If current price within [fib_entry_min,fib_entry_max] retracement zone, create trade
+        Entry = current close; Stop = impulse start (bullish) or impulse start (bearish)
+        Target = entry +/- rr*(|entry-stop|)
+        """
+        if len(legs) < 3:
+            return None
+        last3 = legs[-3:]
+        try:
+            swing_type, is_swing = self._external_get_swing_points(window, last3)
+        except Exception:
+            return None
+        if not is_swing:
+            return None
+        # Impulse leg assumed first of the pattern per original logic
+        impulse = last3[0]
+        start_price = float(impulse['start_value'])
+        end_price = float(impulse['end_value'])
+        # Ensure ordering for retracement math (bullish: end > start)
+        if swing_type == 'bullish' and end_price < start_price:
+            start_price, end_price = end_price, start_price
+        if swing_type == 'bearish' and end_price > start_price:
+            start_price, end_price = end_price, start_price
+        try:
+            fib_levels = self._external_fibo(start_price, end_price)
+        except Exception:
+            return None
+        price = float(window['close'].iloc[-1])
+        # Determine retracement ratio current price lies at
+        total_range = abs(end_price - start_price) or 1e-9
+        retr_ratio = (price - start_price) / total_range if swing_type == 'bullish' else (start_price - price) / total_range
+        # Check within desired fib retracement band
+        if not (self.cfg.fib_entry_min <= retr_ratio <= self.cfg.fib_entry_max):
+            return None
+        # Construct trade parameters
+        if swing_type == 'bullish':
+            entry = price
+            stop = start_price
+            risk = abs(entry - stop)
+            if risk * self.cfg.price_scale < 1:  # avoid zero / tiny risk
+                return None
+            target = entry + self.cfg.rr * risk
+            direction = 'bullish'
+        else:  # bearish
+            entry = price
+            stop = start_price
+            risk = abs(entry - stop)
+            if risk * self.cfg.price_scale < 1:
+                return None
+            target = entry - self.cfg.rr * risk
+            direction = 'bearish'
+        return {
+            'direction': direction,
+            'entry': entry,
+            'stop': stop,
+            'target': target,
+            'rr': self.cfg.rr,
+        }
 
     def _apply_equity(self, trades: List[Trade]):
         """Populate balance_before/after and cash_result given config risk model."""
