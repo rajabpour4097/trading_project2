@@ -1,62 +1,52 @@
 FROM ubuntu:20.04
 
-# جلوگیری از سوالات تعاملی
 ENV DEBIAN_FRONTEND=noninteractive
-
-# تنظیم متغیرهای محیطی
 ENV DISPLAY=:99
-ENV WINEPREFIX=/root/.wine
+ENV WINEPREFIX=/home/wineuser/.wine
+ENV WINEARCH=win64
+ENV TZ=Asia/Tehran
 
-# نصب dependencies
+# Sys deps
 RUN apt-get update && apt-get install -y \
-    wget \
-    curl \
-    wine64 \
-    winetricks \
-    xvfb \
-    x11vnc \
-    fluxbox \
-    python3 \
-    python3-pip \
-    supervisor \
-    && rm -rf /var/lib/apt/lists/*
+    locales tzdata ca-certificates wget curl unzip \
+    xvfb x11vnc fluxbox supervisor \
+    software-properties-common gnupg2 cabextract p7zip-full \
+    python3 python3-pip python3-venv \
+    wine64 winetricks \
+  && rm -rf /var/lib/apt/lists/*
 
-# ایجاد کاربر wine
+# Locale
+RUN locale-gen en_US.UTF-8
+ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+
+# User for Wine
 RUN useradd -m -s /bin/bash wineuser
-
-# تنظیم Wine
 USER wineuser
 WORKDIR /home/wineuser
 
-# راه‌اندازی Wine prefix
-RUN wine wineboot --init
+# Initialize Wine and deps for MT5
+RUN wine wineboot --init || true
+RUN winetricks -q corefonts vcrun2019
 
-# نصب Visual C++ Redistributables (مورد نیاز MT5)
-RUN winetricks -q vcrun2019 corefonts
-
-# بازگشت به root برای نصب Python packages
+# Back to root to copy app
 USER root
 WORKDIR /app
-
-# کپی فایل‌های پروژه
 COPY . /app
 
-# نصب Python packages
-RUN pip3 install MetaTrader5 pandas numpy pytz colorama requests
+# Python deps (از requirements سطح پروژه استفاده می‌کنیم)
+RUN pip3 install --no-cache-dir -r /app/requirements.txt
 
-# دانلود MT5
-RUN wget -O mt5setup.exe https://download.mql5.com/cdn/web/metaquotes.ltd/mt5/mt5setup.exe
+# دانلود نصب‌کننده MT5 (اجرای آن در اولین بار توسط VNC انجام می‌شود)
+RUN wget -O /app/mt5setup.exe https://download.mql5.com/cdn/web/metaquotes.ltd/mt5/mt5setup.exe
 
-# کپی فایل‌های config
+# Supervisor config
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
-COPY start_services.sh /app/start_services.sh
-RUN chmod +x /app/start_services.sh
 
-# تنظیم مالکیت فایل‌ها
+# دسترسی‌ها
 RUN chown -R wineuser:wineuser /app
+RUN mkdir -p /var/log/supervisor && chown -R wineuser:wineuser /var/log/supervisor
 
-# تعریف پورت‌ها
-EXPOSE 5900 6080
+EXPOSE 5900
 
-# اجرای supervisor
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+# اجرا
+CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
