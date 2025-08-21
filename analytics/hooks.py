@@ -9,8 +9,34 @@ MARKET_DIR = RAW_DIR / "market"
 SIGNAL_DIR = RAW_DIR / "signals"
 TRADE_DIR  = RAW_DIR / "trades"
 
-for d in (MARKET_DIR, SIGNAL_DIR, TRADE_DIR):
-    d.mkdir(parents=True, exist_ok=True)
+def _ensure_dirs():
+    """Ensure required directories exist. If a file collides with a directory
+    name (common on Windows), fallback to an alternate directory name and update
+    globals accordingly, so logging keeps working without crashing on import.
+    """
+    global MARKET_DIR, SIGNAL_DIR, TRADE_DIR
+
+    def ensure_dir(path: Path) -> Path:
+        # If path exists as a directory, we're good.
+        if path.exists():
+            if path.is_dir():
+                return path
+            # Collision: a file exists where a directory is expected.
+            alt = path.with_name(path.name + "_dir")
+            alt.mkdir(parents=True, exist_ok=True)
+            print(f"[analytics.hooks] Warning: '{path}' exists as a file. Using '{alt}' for logging.")
+            return alt
+        # Create normally
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    MARKET_DIR = ensure_dir(MARKET_DIR)
+    SIGNAL_DIR = ensure_dir(SIGNAL_DIR)
+    TRADE_DIR = ensure_dir(TRADE_DIR)
+
+# Perform a safe one-time ensure at import
+_ensure_dirs()
 
 def _iran_now_str():
     tehran = timezone(timedelta(hours=3, minutes=30))
