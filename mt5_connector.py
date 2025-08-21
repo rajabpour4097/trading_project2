@@ -3,6 +3,7 @@ import pandas as pd
 import pytz
 from datetime import datetime, time
 from metatrader5_config import MT5_CONFIG
+from analytics.hooks import log_market, log_trade
 
 RET_OK = 10009  # mt5.TRADE_RETCODE_DONE
 
@@ -76,6 +77,14 @@ class MT5Connector:
         tick = mt5.symbol_info_tick(self.symbol)
         if not tick:
             return None
+        # try logging market tick
+        try:
+            info = mt5.symbol_info(self.symbol)
+            if info:
+                log_market(self.symbol, getattr(tick, "bid", None), getattr(tick, "ask", None),
+                           getattr(tick, "last", None), info.point, info.digits, source="mt5", session="bot")
+        except Exception:
+            pass
         spread = (tick.ask - tick.bid) * 10000
         if spread > self.max_spread:
             print(f"⚠️ Spread {spread:.1f} > max {self.max_spread}")
@@ -251,6 +260,10 @@ class MT5Connector:
         }
         print(f"📤 BUY {self.symbol} @ {entry} VOL={vol} SL={sl_adj} TP={tp_adj}")
         result = self.try_all_filling_modes(request)
+        try:
+            log_trade(self.symbol, "BUY", request, result, reason="strategy_signal")
+        except Exception:
+            pass
         return result
 
     def open_sell_position(self, tick, sl, tp, comment="", volume=None, risk_pct=None):
@@ -277,6 +290,10 @@ class MT5Connector:
         }
         print(f"📤 SELL {self.symbol} @ {entry} VOL={vol} SL={sl_adj} TP={tp_adj}")
         result = self.try_all_filling_modes(request)
+        try:
+            log_trade(self.symbol, "SELL", request, result, reason="strategy_signal")
+        except Exception:
+            pass
         return result
 
     def close_all_positions(self):

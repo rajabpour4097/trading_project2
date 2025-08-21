@@ -12,6 +12,7 @@ from utils import BotState
 from save_file import log
 from metatrader5_config import MT5_CONFIG, TRADING_CONFIG
 from email_notifier import send_trade_email_async
+from analytics.hooks import log_signal
 
 
 def main():
@@ -329,7 +330,24 @@ def main():
                 # بخش معاملات - buy statement (مطابق منطق main_saver_copy2.py)
                 if state.true_position and (last_swing_type == 'bullish' or swing_type == 'bullish'):
                     last_tick = mt5.symbol_info_tick(MT5_CONFIG['symbol'])
-                    buy_entry_price = last_tick.ask  # برای BUY از ask استفاده کن
+                    buy_entry_price = last_tick.ask
+                    # لاگ سیگنال (قبل از ارسال سفارش)
+                    try:
+                        log_signal(
+                            symbol=MT5_CONFIG['symbol'],
+                            strategy="swing_fib_v1",
+                            direction="buy",
+                            rr=win_ratio,
+                            entry=buy_entry_price,
+                            sl=float(state.fib_levels['1.0'] if abs(state.fib_levels['0.9']-buy_entry_price) <= _pip_size_for(MT5_CONFIG['symbol'])*2 else state.fib_levels['0.9']),
+                            tp=None,
+                            fib=state.fib_levels,
+                            confidence=None,
+                            features_json=None,
+                            note="triggered_by_pullback"
+                        )
+                    except Exception:
+                        pass
                     # دریافت قیمت لحظه‌ای بازار از MT5
                     # current_open_point = cache_data.iloc[-1]['close']
                     log(f'Start long position income {cache_data.iloc[-1].name}', color='blue')
@@ -409,10 +427,24 @@ def main():
 
                 # بخش معاملات - sell statement (مطابق منطق main_saver_copy2.py)
                 if state.true_position and (last_swing_type == 'bearish' or swing_type == 'bearish'):
-                    
                     last_tick = mt5.symbol_info_tick(MT5_CONFIG['symbol'])
                     sell_entry_price = last_tick.bid
-
+                    try:
+                        log_signal(
+                            symbol=MT5_CONFIG['symbol'],
+                            strategy="swing_fib_v1",
+                            direction="sell",
+                            rr=win_ratio,
+                            entry=sell_entry_price,
+                            sl=float(state.fib_levels['1.0'] if abs(state.fib_levels['0.9']-sell_entry_price) <= _pip_size_for(MT5_CONFIG['symbol'])*2 else state.fib_levels['0.9']),
+                            tp=None,
+                            fib=state.fib_levels,
+                            confidence=None,
+                            features_json=None,
+                            note="triggered_by_pullback"
+                        )
+                    except Exception:
+                        pass
                     log(f'Start short position income {cache_data.iloc[-1].name}', color='red')
                     log(f'current_open_point (market bid): {sell_entry_price}', color='red')
 
