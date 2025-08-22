@@ -362,14 +362,31 @@ def main():
 
                     candidate_sl = state.fib_levels['1.0'] if is_close_to_09 else state.fib_levels['0.9']
 
-                    # گارد جهت: برای BUY باید زیر entry باشد؛ اگر نبود به 1.0 برگرد یا حداقل فاصله را اعمال کن
+                    min_pip_dist = 2  # حداقل 2 پیپ واقعی
+                    pip_size = _pip_size_for(MT5_CONFIG['symbol'])
+                    min_abs_dist = max(min_pip_dist * pip_size, min_dist)
+
+                    # گارد جهت
                     if candidate_sl >= buy_entry_price:
-                        candidate_sl = state.fib_levels['1.0']
-                    if candidate_sl >= buy_entry_price:
-                        candidate_sl = buy_entry_price - max(two_pips, min_dist)  # آخرین پناهگاه
+                        # برگرداندن به 1.0 اگر 0.9 بالاتر بود
+                        candidate_sl = float(state.fib_levels['1.0'])
+                    # اطمینان از فاصله
+                    if (buy_entry_price - candidate_sl) < min_abs_dist:
+                        # اگر فاصله خیلی کم است، یا SL را جابه‌جا کن یا معامله را لغو کن
+                        adj = buy_entry_price - min_abs_dist
+                        if adj <= 0:
+                            log("🚫 Skip BUY: invalid SL distance", color='red')
+                            state.reset()
+                            reset_state_and_window()
+                            continue
+                        candidate_sl = float(adj)
 
                     stop = float(candidate_sl)
-                    log(f'stop (final) = {stop}', color='red')
+                    if stop >= buy_entry_price:
+                        log("🚫 Skip BUY: SL still >= entry after adjust", color='red')
+                        state.reset()
+                        reset_state_and_window()
+                        continue
 
                     stop_distance = abs(buy_entry_price - stop)
                     reward_end = buy_entry_price + (stop_distance * win_ratio)
@@ -455,14 +472,22 @@ def main():
                     is_close_to_09 = abs(state.fib_levels['0.9'] - sell_entry_price) <= two_pips
                     candidate_sl = state.fib_levels['1.0'] if is_close_to_09 else state.fib_levels['0.9']
 
-                    # گارد جهت: برای SELL باید بالای entry باشد
+                    min_pip_dist = 2.0
+                    pip_size = _pip_size_for(MT5_CONFIG['symbol'])
+                    min_abs_dist = max(min_pip_dist * pip_size, min_dist)
+
                     if candidate_sl <= sell_entry_price:
-                        candidate_sl = state.fib_levels['1.0']
-                    if candidate_sl <= sell_entry_price:
-                        candidate_sl = sell_entry_price + max(two_pips, min_dist)
+                        candidate_sl = float(state.fib_levels['1.0'])
+                    if (candidate_sl - sell_entry_price) < min_abs_dist:
+                        adj = sell_entry_price + min_abs_dist
+                        candidate_sl = float(adj)
 
                     stop = float(candidate_sl)
-                    log(f'stop (final) = {stop}', color='red')
+                    if stop <= sell_entry_price:
+                        log("🚫 Skip SELL: SL still <= entry after adjust", color='red')
+                        state.reset()
+                        reset_state_and_window()
+                        continue
 
                     stop_distance = abs(sell_entry_price - stop)
                     reward_end = sell_entry_price - (stop_distance * win_ratio)

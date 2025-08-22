@@ -400,6 +400,16 @@ class MT5Connector:
             return self.lot
 
         vol = risk_money / total_cost_per_lot
+
+        MAX_LEVERAGE_FACTOR = 0.02  # حداکثر 2% اکوییتی در ریسک قیمت
+        # اگر ریسک پولی هر 1 لات خیلی کوچک شده و vol بسیار بزرگ است، کلمپ کن
+        theoretical_loss_per_lot = price_risk_per_lot
+        if theoretical_loss_per_lot <= 0:
+            return self.lot
+        max_allowed_vol = (acc.balance * MAX_LEVERAGE_FACTOR) / theoretical_loss_per_lot
+        if vol > max_allowed_vol:
+            vol = max_allowed_vol
+
         return self._normalize_volume(vol)
 
     def _resolve_volume(self, volume, entry, sl, tick, risk_pct):
