@@ -8,13 +8,14 @@ RAW_DIR = ROOT / "trading-analytics-logger" / "data" / "raw"
 MARKET_DIR = RAW_DIR / "market"
 SIGNAL_DIR = RAW_DIR / "signals"
 TRADE_DIR  = RAW_DIR / "trades"
+EVENT_DIR  = RAW_DIR / "events"  # جدید: رویدادهای مدیریت ریسک / تغییر SL/TP
 
 def _ensure_dirs():
     """Ensure required directories exist. If a file collides with a directory
     name (common on Windows), fallback to an alternate directory name and update
     globals accordingly, so logging keeps working without crashing on import.
     """
-    global MARKET_DIR, SIGNAL_DIR, TRADE_DIR
+    global MARKET_DIR, SIGNAL_DIR, TRADE_DIR, EVENT_DIR
 
     def ensure_dir(path: Path) -> Path:
         # If path exists as a directory, we're good.
@@ -34,6 +35,7 @@ def _ensure_dirs():
     MARKET_DIR = ensure_dir(MARKET_DIR)
     SIGNAL_DIR = ensure_dir(SIGNAL_DIR)
     TRADE_DIR = ensure_dir(TRADE_DIR)
+    EVENT_DIR = ensure_dir(EVENT_DIR)
 
 # Perform a safe one-time ensure at import
 _ensure_dirs()
@@ -113,3 +115,39 @@ def log_trade(symbol: str, side: str, request: dict, result, reason: str=""):
         "dt_utc","dt_iran","symbol","side","req_price","req_vol","req_deviation","req_filling",
         "retcode","order","deal","result_price","result_comment","sl","tp","magic","reason"
     ], row)
+
+def log_position_event(symbol: str, ticket: int, event: str, direction: str, entry: float, current_price: float,
+                        sl: float, tp: float, profit_R: float | None, stage: int | None, risk_abs: float | None,
+                        locked_R: float | None = None, volume: float | None = None, note: str | None = None):
+    """
+    ثبت یک رویداد مدیریت پوزیشن (open, breakeven, trail_extend, close, adjust, ...) برای تحلیل‌های بعدی.
+
+    profit_R: نسبت سود جاری به ریسک اولیه (R) در لحظه رویداد.
+    risk_abs: فاصله قیمتی اولیه بین Entry و SL (برای BUY: entry - sl ، برای SELL: sl - entry)
+    locked_R: اگر بخشی از سود قفل شده (مثلاً 0.5R) ثبت شود.
+    stage: مرحله مدیریت (0=initial,1=breakeven,2=trail / extend ...)
+    """
+    fp = EVENT_DIR / f"{symbol}_position_events_{datetime.utcnow():%Y-%m-%d}.csv"
+    headers = [
+        "dt_utc","dt_iran","symbol","ticket","event","direction","stage","entry","current_price",
+        "sl","tp","risk_abs","profit_R","locked_R","volume","note"
+    ]
+    row = {
+        "dt_utc": _utc_now_str(),
+        "dt_iran": _iran_now_str(),
+        "symbol": symbol,
+        "ticket": ticket,
+        "event": event,
+        "direction": direction,
+        "stage": stage,
+        "entry": entry,
+        "current_price": current_price,
+        "sl": sl,
+        "tp": tp,
+        "risk_abs": risk_abs,
+        "profit_R": profit_R,
+        "locked_R": locked_R,
+        "volume": volume,
+        "note": note
+    }
+    _append_csv(fp, headers, row)

@@ -3,7 +3,7 @@ import pandas as pd
 import pytz
 from datetime import datetime, time
 from metatrader5_config import MT5_CONFIG
-from analytics.hooks import log_market, log_trade
+from analytics.hooks import log_market, log_trade, log_position_event
 
 RET_OK = 10009  # mt5.TRADE_RETCODE_DONE
 
@@ -262,6 +262,24 @@ class MT5Connector:
         result = self.try_all_filling_modes(request)
         try:
             log_trade(self.symbol, "BUY", request, result, reason="strategy_signal")
+            if result and getattr(result, 'retcode', None) == RET_OK:
+                # ثبت رویداد باز شدن پوزیشن (خلاصه؛ مدیریت دقیق در main)
+                log_position_event(
+                    symbol=self.symbol,
+                    ticket=getattr(result, 'order', 0),
+                    event='open_order',
+                    direction='buy',
+                    entry=entry,
+                    current_price=entry,
+                    sl=sl_adj,
+                    tp=tp_adj,
+                    profit_R=0.0,
+                    stage=0,
+                    risk_abs=abs(entry - sl_adj),
+                    locked_R=None,
+                    volume=request.get('volume'),
+                    note='initial order'
+                )
         except Exception:
             pass
         return result
@@ -292,6 +310,23 @@ class MT5Connector:
         result = self.try_all_filling_modes(request)
         try:
             log_trade(self.symbol, "SELL", request, result, reason="strategy_signal")
+            if result and getattr(result, 'retcode', None) == RET_OK:
+                log_position_event(
+                    symbol=self.symbol,
+                    ticket=getattr(result, 'order', 0),
+                    event='open_order',
+                    direction='sell',
+                    entry=entry,
+                    current_price=entry,
+                    sl=sl_adj,
+                    tp=tp_adj,
+                    profit_R=0.0,
+                    stage=0,
+                    risk_abs=abs(entry - sl_adj),
+                    locked_R=None,
+                    volume=request.get('volume'),
+                    note='initial order'
+                )
         except Exception:
             pass
         return result

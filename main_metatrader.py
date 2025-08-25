@@ -12,7 +12,7 @@ from utils import BotState
 from save_file import log
 from metatrader5_config import MT5_CONFIG, TRADING_CONFIG, DYNAMIC_RISK_CONFIG
 from email_notifier import send_trade_email_async
-from analytics.hooks import log_signal, log_trade_event
+from analytics.hooks import log_signal, log_position_event
 
 
 def main():
@@ -74,7 +74,7 @@ def main():
         log(f'Reset state -> new start_index={start_index} (slice len={len(cache_data.iloc[start_index:])})', color='magenta')
 
     # حالت‌های مدیریت پوزیشن
-    position_states = {}  # ticket -> {'entry':..., 'sl':..., 'risk':..., 'direction':..., 'stage':0}
+    position_states = {}  # ticket -> {'entry':..., 'risk':..., 'direction':..., 'stage':0, 'breakeven_time':None,'trail_time':None}
 
     def _digits():
         info = mt5.symbol_info(MT5_CONFIG['symbol'])
@@ -92,8 +92,30 @@ def main():
             'entry': pos.price_open,
             'risk': risk,
             'direction': 'buy' if pos.type == mt5.POSITION_TYPE_BUY else 'sell',
-            'stage': 0  # 0=initial,1=breakeven done,2=trail done
+            'stage': 0,  # 0=initial,1=breakeven done,2=trail done
+            'breakeven_time': None,
+            'trail_time': None
         }
+        # رویداد ثبت پوزیشن
+        try:
+            log_position_event(
+                symbol=MT5_CONFIG['symbol'],
+                ticket=pos.ticket,
+                event='open',
+                direction=position_states[pos.ticket]['direction'],
+                entry=pos.price_open,
+                current_price=pos.price_open,
+                sl=pos.sl,
+                tp=pos.tp,
+                profit_R=0.0,
+                stage=0,
+                risk_abs=risk,
+                locked_R=None,
+                volume=pos.volume,
+                note='position registered'
+            )
+        except Exception:
+            pass
 
     def manage_open_positions():
         if not DYNAMIC_RISK_CONFIG.get('enable'):
@@ -136,25 +158,27 @@ def main():
                 if res and getattr(res, 'retcode', None) == 10009:
                     log(f'🔐 Breakeven applied ticket={pos.ticket} SL->{new_sl}', color='green')
                     st['stage'] = 1
+                    st['breakeven_time'] = datetime.utcnow()
+                    try:
+                        log_position_event(
+                            symbol=MT5_CONFIG['symbol'],
+                            ticket=pos.ticket,
+                            event='breakeven',
+                            direction=direction,
+                            entry=entry,
+                            current_price=cur_price,
+                            sl=new_sl,
+                            tp=pos.tp,
+                            profit_R=profit_R,
+                            stage=1,
+                            risk_abs=st['risk'],
+                            locked_R=0.0,
+                            volume=pos.volume,
+                            note='breakeven_R reached'
+                        )
+                    except Exception:
+                        pass
                     modified = True
-
-                    # ثبت رویداد Breakeven
-                    log_trade_event({
-                        "ticket": pos.ticket,
-                        "symbol": MT5_CONFIG['symbol'],
-                        "direction": direction,
-                        "event_type": "breakeven",
-                        "stage": 1,
-                        "entry_price": entry,
-                        "sl": new_sl,
-                        "tp": pos.tp,
-                        "initial_risk_pips": (st['risk']/pip_size),
-                        "initial_tp_R": DYNAMIC_RISK_CONFIG['trail_trigger_R'],  # یا ثابت RR اولیه
-                        "locked_R": 0.0,
-                        "current_profit_R": profit_R,
-                        "mfe_R": st.get("mfe_R", profit_R),
-                        "mae_R": st.get("mae_R", 0.0)
-                    })
 
             # مرحله 2: Trail + Extend TP
             if stage <= 1 and profit_R >= trail_trigger_R:
@@ -173,25 +197,27 @@ def main():
                     if res and getattr(res, 'retcode', None) == 10009:
                         log(f'📈 Trail+Extend applied ticket={pos.ticket} SL->{new_sl} TP->{new_tp}', color='cyan')
                         st['stage'] = 2
+                        st['trail_time'] = datetime.utcnow()
+                        try:
+                            log_position_event(
+                                symbol=MT5_CONFIG['symbol'],
+                                ticket=pos.ticket,
+                                event='trail_extend',
+                                direction=direction,
+                                entry=entry,
+                                current_price=cur_price,
+                                sl=new_sl,
+                                tp=new_tp,
+                                profit_R=profit_R,
+                                stage=2,
+                                risk_abs=st['risk'],
+                                locked_R=lock_R,
+                                volume=pos.volume,
+                                note='trail_trigger_R reached'
+                            )
+                        except Exception:
+                            pass
                         modified = True
-
-                        # ثبت رویداد Trail
-                        log_trade_event({
-                            "ticket": pos.ticket,
-                            "symbol": MT5_CONFIG['symbol'],
-                            "direction": direction,
-                            "event_type": "trail_extend",
-                            "stage": 2,
-                            "entry_price": entry,
-                            "sl": new_sl,
-                            "tp": new_tp,
-                            "initial_risk_pips": (st['risk']/pip_size),
-                            "initial_tp_R": 1.2,  # RR اولیه
-                            "locked_R": DYNAMIC_RISK_CONFIG['lock_R_after_trail'],
-                            "current_profit_R": profit_R,
-                            "mfe_R": st.get("mfe_R", profit_R),
-                            "mae_R": st.get("mae_R", 0.0)
-                        })
 
             # پاکسازی در صورت بسته شدن (handled بیرون)
             if modified:
