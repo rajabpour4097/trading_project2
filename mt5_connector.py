@@ -418,3 +418,17 @@ class MT5Connector:
         if risk_pct is not None:
             return self.calculate_volume_by_risk(entry, sl, tick, risk_pct)
         return self.lot
+
+    # ---------- Modify SL/TP ----------
+    def modify_sl_tp(self, ticket: int, new_sl=None, new_tp=None):
+        req = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "position": ticket,
+            "symbol": self.symbol,
+        }
+        if new_sl is not None:
+            req["sl"] = new_sl
+        if new_tp is not None:
+            req["tp"] = new_tp
+        res = mt5.order_send(req)
+        return res

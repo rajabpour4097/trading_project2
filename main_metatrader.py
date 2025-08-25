@@ -10,9 +10,9 @@ from mt5_connector import MT5Connector
 from swing import get_swing_points
 from utils import BotState
 from save_file import log
-from metatrader5_config import MT5_CONFIG, TRADING_CONFIG
+from metatrader5_config import MT5_CONFIG, TRADING_CONFIG, DYNAMIC_RISK_CONFIG
 from email_notifier import send_trade_email_async
-from analytics.hooks import log_signal
+from analytics.hooks import log_signal, log_trade_event
 
 
 def main():
@@ -72,6 +72,130 @@ def main():
         state.reset()
         start_index = max(0, len(cache_data) - window_size)
         log(f'Reset state -> new start_index={start_index} (slice len={len(cache_data.iloc[start_index:])})', color='magenta')
+
+    # حالت‌های مدیریت پوزیشن
+    position_states = {}  # ticket -> {'entry':..., 'sl':..., 'risk':..., 'direction':..., 'stage':0}
+
+    def _digits():
+        info = mt5.symbol_info(MT5_CONFIG['symbol'])
+        return info.digits if info else 5
+
+    def _round(p):
+        return float(f"{p:.{_digits()}f}")
+
+    def register_position(pos):
+        # محاسبه R (ریسک اولیه)
+        risk = abs(pos.price_open - pos.sl) if pos.sl else None
+        if not risk or risk == 0:
+            return
+        position_states[pos.ticket] = {
+            'entry': pos.price_open,
+            'risk': risk,
+            'direction': 'buy' if pos.type == mt5.POSITION_TYPE_BUY else 'sell',
+            'stage': 0  # 0=initial,1=breakeven done,2=trail done
+        }
+
+    def manage_open_positions():
+        if not DYNAMIC_RISK_CONFIG.get('enable'):
+            return
+        positions = mt5_conn.get_positions()
+        if not positions:
+            return
+        tick = mt5.symbol_info_tick(MT5_CONFIG['symbol'])
+        if not tick:
+            return
+        for pos in positions:
+            if pos.ticket not in position_states:
+                register_position(pos)
+            st = position_states.get(pos.ticket)
+            if not st:
+                continue
+            entry = st['entry']
+            risk = st['risk']
+            direction = st['direction']
+            stage = st['stage']
+            # قیمت جاری
+            cur_price = tick.bid if direction == 'buy' else tick.ask
+            # سود جاری به R
+            if direction == 'buy':
+                profit_R = (cur_price - entry) / risk
+            else:
+                profit_R = (entry - cur_price) / risk
+
+            breakeven_R = DYNAMIC_RISK_CONFIG['breakeven_R']
+            trail_trigger_R = DYNAMIC_RISK_CONFIG['trail_trigger_R']
+            lock_R = DYNAMIC_RISK_CONFIG['lock_R_after_trail']
+            extended_tp_R = DYNAMIC_RISK_CONFIG['extended_tp_R']
+
+            modified = False
+
+            # مرحله 1: Breakeven
+            if stage == 0 and profit_R >= breakeven_R:
+                new_sl = entry if direction == 'buy' else entry
+                res = mt5_conn.modify_sl_tp(pos.ticket, new_sl=_round(new_sl), new_tp=pos.tp)
+                if res and getattr(res, 'retcode', None) == 10009:
+                    log(f'🔐 Breakeven applied ticket={pos.ticket} SL->{new_sl}', color='green')
+                    st['stage'] = 1
+                    modified = True
+
+                    # ثبت رویداد Breakeven
+                    log_trade_event({
+                        "ticket": pos.ticket,
+                        "symbol": MT5_CONFIG['symbol'],
+                        "direction": direction,
+                        "event_type": "breakeven",
+                        "stage": 1,
+                        "entry_price": entry,
+                        "sl": new_sl,
+                        "tp": pos.tp,
+                        "initial_risk_pips": (st['risk']/pip_size),
+                        "initial_tp_R": DYNAMIC_RISK_CONFIG['trail_trigger_R'],  # یا ثابت RR اولیه
+                        "locked_R": 0.0,
+                        "current_profit_R": profit_R,
+                        "mfe_R": st.get("mfe_R", profit_R),
+                        "mae_R": st.get("mae_R", 0.0)
+                    })
+
+            # مرحله 2: Trail + Extend TP
+            if stage <= 1 and profit_R >= trail_trigger_R:
+                # SL قفل روی +lock_R
+                if direction == 'buy':
+                    new_sl = entry + lock_R * risk
+                    new_tp = entry + extended_tp_R * risk
+                else:
+                    new_sl = entry - lock_R * risk
+                    new_tp = entry - extended_tp_R * risk
+                new_sl = _round(new_sl)
+                new_tp = _round(new_tp)
+                # فقط اگر بهتر از قبلی بود
+                if (direction == 'buy' and new_sl > pos.sl) or (direction == 'sell' and new_sl < pos.sl):
+                    res = mt5_conn.modify_sl_tp(pos.ticket, new_sl=new_sl, new_tp=new_tp)
+                    if res and getattr(res, 'retcode', None) == 10009:
+                        log(f'📈 Trail+Extend applied ticket={pos.ticket} SL->{new_sl} TP->{new_tp}', color='cyan')
+                        st['stage'] = 2
+                        modified = True
+
+                        # ثبت رویداد Trail
+                        log_trade_event({
+                            "ticket": pos.ticket,
+                            "symbol": MT5_CONFIG['symbol'],
+                            "direction": direction,
+                            "event_type": "trail_extend",
+                            "stage": 2,
+                            "entry_price": entry,
+                            "sl": new_sl,
+                            "tp": new_tp,
+                            "initial_risk_pips": (st['risk']/pip_size),
+                            "initial_tp_R": 1.2,  # RR اولیه
+                            "locked_R": DYNAMIC_RISK_CONFIG['lock_R_after_trail'],
+                            "current_profit_R": profit_R,
+                            "mfe_R": st.get("mfe_R", profit_R),
+                            "mae_R": st.get("mae_R", 0.0)
+                        })
+
+            # پاکسازی در صورت بسته شدن (handled بیرون)
+            if modified:
+                position_states[pos.ticket] = st
 
     while True:
         try:
@@ -559,6 +683,8 @@ def main():
                 if position_open:
                     log("🏁 Position closed", color='yellow')
                     position_open = False
+
+            manage_open_positions()
 
             sleep(0.5)  # مطابق main_saver_copy2.py
 

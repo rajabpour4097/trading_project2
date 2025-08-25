@@ -57,13 +57,22 @@ MT5_CONFIG = {
 
 # تنظیمات استراتژی
 TRADING_CONFIG = {
-    'threshold': 6,             # آستانه تشخیص leg
-    'fib_705': 0.705,          # سطح فیبوناچی اول
-    'fib_90': 0.9,             # سطح فیبوناچی دوم
-    'window_size': 100,         # اندازه پنجره داده
-    'min_swing_size': 4,        # حداقل تعداد leg برای swing
-    'entry_tolerance': 2.0,     # فاصله مجاز از fibonacci (pip)
-    'lookback_period': 20,      # تعداد کندل برای بررسی آینده
+    'threshold': 6,
+    'fib_705': 0.705,
+    'fib_90': 0.9,
+    'window_size': 100,
+    'min_swing_size': 4,
+    'entry_tolerance': 2.0,
+    'lookback_period': 20,
+}
+
+# مدیریت پویا (اضافه جدید)
+DYNAMIC_RISK_CONFIG = {
+    'enable': True,
+    'breakeven_R': 0.5,        # حرکت SL به ورود
+    'trail_trigger_R': 0.7,    # شروع قفل سود و افزایش TP
+    'lock_R_after_trail': 0.5, # SL روی +0.5R (برای BUY: entry + 0.5R distance)
+    'extended_tp_R': 1.8       # افزایش TP از 1.2R به این مقدار
 }
 
 # تنظیمات لاگ
