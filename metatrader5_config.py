@@ -66,13 +66,44 @@ TRADING_CONFIG = {
     'lookback_period': 20,
 }
 
-# مدیریت پویا (اضافه جدید)
+# مدیریت پویا چند مرحله‌ای جدید
+# مراحل:
+# 1) پوشش کارمزد: وقتی سود شناور برابر یا بیشتر از مجموع کمیسیون شد، SL روی نقطه پوشش کارمزد قرار می‌گیرد (قفل همان مقدار) و TP اصلی (1.2R) حفظ می‌شود.
+# 2) 0.5R: SL روی +0.5R قرار می‌گیرد، TP همچنان 1.2R
+# 3) 1.0R: SL روی +1.0R، TP به 1.5R افزایش
+# 4) 1.5R: SL روی +1.5R، TP به 2.0R افزایش
 DYNAMIC_RISK_CONFIG = {
     'enable': True,
-    'breakeven_R': 0.5,        # حرکت SL به ورود
-    'trail_trigger_R': 0.7,    # شروع قفل سود و افزایش TP
-    'lock_R_after_trail': 0.5, # SL روی +0.5R (برای BUY: entry + 0.5R distance)
-    'extended_tp_R': 1.8       # افزایش TP از 1.2R به این مقدار
+    'commission_per_lot': 4.5,          # کمیسیون کل (رفت و برگشت یا فقط رفت؟ طبق بروکر - قابل تنظیم)
+    'commission_mode': 'per_lot',       # per_lot (کل)، per_side (نیمی از رفت و برگشت) در صورت نیاز توسعه
+    'round_trip': False,                # اگر True و per_side باشد دو برابر می‌کند
+    'base_tp_R': 1.2,                   # TP اولیه تنظیم‌شده هنگام ورود (برای مرجع)
+    'stages': [
+        {  # پوشش کمیسیون
+            'id': 'commission_cover',
+            'type': 'commission',      # trigger by commission recovered
+            'sl_lock': 'commission',   # قفل روی مقدار کمیسیون
+            'tp_R': 1.2                # بدون تغییر
+        },
+        {  # 0.5R
+            'id': 'half_R',
+            'trigger_R': 0.5,
+            'sl_lock_R': 0.5,
+            'tp_R': 1.2
+        },
+        {  # 1.0R
+            'id': 'one_R',
+            'trigger_R': 1.0,
+            'sl_lock_R': 1.0,
+            'tp_R': 1.5
+        },
+        {  # 1.5R
+            'id': 'one_half_R',
+            'trigger_R': 1.5,
+            'sl_lock_R': 1.5,
+            'tp_R': 2.0
+        }
+    ]
 }
 
 # تنظیمات لاگ

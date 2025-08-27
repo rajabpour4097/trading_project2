@@ -99,21 +99,32 @@ def log_trade(symbol: str, side: str, request: dict, result, reason: str=""):
     deal = getattr(result, "deal", None) if result is not None else None
     price = getattr(result, "price", None) if result is not None else None
     comment = getattr(result, "comment", None) if result is not None else None
+    # محاسبه ریسک اولیه (فاصله ورود تا SL) برای تحلیل بعدی
+    req_price = request.get("price")
+    req_sl = request.get("sl")
+    risk_abs = None
+    try:
+        if req_price is not None and req_sl is not None:
+            risk_abs = abs(float(req_price) - float(req_sl))
+    except Exception:
+        risk_abs = None
+
     row = {
         "dt_utc": _utc_now_str(),
         "dt_iran": _iran_now_str(),
         "symbol": symbol, "side": side,
-        "req_price": request.get("price"), "req_vol": request.get("volume"),
+        "req_price": req_price, "req_vol": request.get("volume"),
         "req_deviation": request.get("deviation"), "req_filling": request.get("type_filling"),
         "retcode": retcode, "order": order, "deal": deal,
         "result_price": price, "result_comment": comment,
         "sl": request.get("sl"), "tp": request.get("tp"),
-        "magic": request.get("magic"), "reason": reason
+        "magic": request.get("magic"), "reason": reason,
+        "risk_abs": risk_abs
     }
     fp = TRADE_DIR / f"{symbol}_trades_{datetime.utcnow():%Y-%m-%d}.csv"
     _append_csv(fp, [
         "dt_utc","dt_iran","symbol","side","req_price","req_vol","req_deviation","req_filling",
-        "retcode","order","deal","result_price","result_comment","sl","tp","magic","reason"
+        "retcode","order","deal","result_price","result_comment","sl","tp","magic","reason","risk_abs"
     ], row)
 
 def log_position_event(symbol: str, ticket: int, event: str, direction: str, entry: float, current_price: float,

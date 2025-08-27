@@ -74,7 +74,7 @@ def main():
         log(f'Reset state -> new start_index={start_index} (slice len={len(cache_data.iloc[start_index:])})', color='magenta')
 
     # حالت‌های مدیریت پوزیشن
-    position_states = {}  # ticket -> {'entry':..., 'risk':..., 'direction':..., 'stage':0, 'breakeven_time':None,'trail_time':None}
+    position_states = {}  # ticket -> {'entry':..., 'risk':..., 'direction':..., 'done_stages':set(), 'base_tp_R':float, 'commission_locked':False}
 
     def _digits():
         info = mt5.symbol_info(MT5_CONFIG['symbol'])
@@ -92,9 +92,9 @@ def main():
             'entry': pos.price_open,
             'risk': risk,
             'direction': 'buy' if pos.type == mt5.POSITION_TYPE_BUY else 'sell',
-            'stage': 0,  # 0=initial,1=breakeven done,2=trail done
-            'breakeven_time': None,
-            'trail_time': None
+            'done_stages': set(),
+            'base_tp_R': DYNAMIC_RISK_CONFIG.get('base_tp_R', 1.2),
+            'commission_locked': False
         }
         # رویداد ثبت پوزیشن
         try:
@@ -126,6 +126,8 @@ def main():
         tick = mt5.symbol_info_tick(MT5_CONFIG['symbol'])
         if not tick:
             return
+        stages_cfg = DYNAMIC_RISK_CONFIG.get('stages', [])
+        commission_per_lot = DYNAMIC_RISK_CONFIG.get('commission_per_lot', 0.0)
         for pos in positions:
             if pos.ticket not in position_states:
                 register_position(pos)
@@ -135,92 +137,102 @@ def main():
             entry = st['entry']
             risk = st['risk']
             direction = st['direction']
-            stage = st['stage']
-            # قیمت جاری
             cur_price = tick.bid if direction == 'buy' else tick.ask
-            # سود جاری به R
+            # profit in price
             if direction == 'buy':
-                profit_R = (cur_price - entry) / risk
+                price_profit = cur_price - entry
             else:
-                profit_R = (entry - cur_price) / risk
+                price_profit = entry - cur_price
+            profit_R = price_profit / risk if risk else 0.0
+            modified_any = False
 
-            breakeven_R = DYNAMIC_RISK_CONFIG['breakeven_R']
-            trail_trigger_R = DYNAMIC_RISK_CONFIG['trail_trigger_R']
-            lock_R = DYNAMIC_RISK_CONFIG['lock_R_after_trail']
-            extended_tp_R = DYNAMIC_RISK_CONFIG['extended_tp_R']
+            # محاسبه ارزش پولی 1R تقریبی (بدون اسپرد) برای تبدیل کامیشن به R:
+            # risk_abs_price = risk (فاصله قیمتی) * volume * contract ارزش واقعی - ساده‌سازی: فقط نسبت بر اساس فاصله قیمتی.
+            # برای دقت بیشتر باید tick_value استفاده شود؛ اینجا ساده نگه می‌داریم.
+            # کمیسیون بر اساس حجم پوزیشن جاری:
+            commission_total = commission_per_lot * pos.volume if commission_per_lot else 0.0
 
-            modified = False
+            # عبور از مراحل
+            for stage_cfg in stages_cfg:
+                sid = stage_cfg.get('id')
+                if sid in st['done_stages']:
+                    continue
+                new_sl = None
+                new_tp = None
+                event_name = None
+                locked_R = None
 
-            # مرحله 1: Breakeven
-            if stage == 0 and profit_R >= breakeven_R:
-                new_sl = entry if direction == 'buy' else entry
-                res = mt5_conn.modify_sl_tp(pos.ticket, new_sl=_round(new_sl), new_tp=pos.tp)
-                if res and getattr(res, 'retcode', None) == 10009:
-                    log(f'🔐 Breakeven applied ticket={pos.ticket} SL->{new_sl}', color='green')
-                    st['stage'] = 1
-                    st['breakeven_time'] = datetime.utcnow()
-                    try:
-                        log_position_event(
-                            symbol=MT5_CONFIG['symbol'],
-                            ticket=pos.ticket,
-                            event='breakeven',
-                            direction=direction,
-                            entry=entry,
-                            current_price=cur_price,
-                            sl=new_sl,
-                            tp=pos.tp,
-                            profit_R=profit_R,
-                            stage=1,
-                            risk_abs=st['risk'],
-                            locked_R=0.0,
-                            volume=pos.volume,
-                            note='breakeven_R reached'
-                        )
-                    except Exception:
-                        pass
-                    modified = True
-
-            # مرحله 2: Trail + Extend TP
-            if stage <= 1 and profit_R >= trail_trigger_R:
-                # SL قفل روی +lock_R
-                if direction == 'buy':
-                    new_sl = entry + lock_R * risk
-                    new_tp = entry + extended_tp_R * risk
+                # Stage type commission
+                if stage_cfg.get('type') == 'commission' and commission_total > 0:
+                    # نیاز به تخمین سود دلاری جاری: تقریباً profit_R * (risk_value)؛ اینجا ساده: اگر profit_R * risk >= commission_value/point_value => پیچیده.
+                    # راه ساده: وقتی profit_R * 1R_cash >= commission_total.
+                    # ما 1R_cash را تخمینی با (risk * مخصوص ارزش هر پوینت * حجم) باید داشته باشیم؛ چون نداریم، این مرحله را موقتاً بر اساس profit_R >= commission_total / (risk * 100000) (تقریبی) نمی‌کنیم.
+                    # ساده‌تر: اگر سود قیمتی * حجم >= کمیسیون (بسیار ساده و تقریبی)
+                    if price_profit * pos.volume >= commission_total:
+                        # قفل کردن SL روی نقطه ورود + (commission_locked نقطه‌ای)؟ طبق تعریف: «SL روی نقطه پوشش کمیسیون» = entry + offset معادل سود کمیسیون.
+                        # offset تقریبی: کمیسیون / (volume)
+                        price_offset = commission_total / pos.volume if pos.volume else 0.0
+                        if direction == 'buy':
+                            new_sl = entry + price_offset
+                        else:
+                            new_sl = entry - price_offset
+                        new_tp = pos.tp  # بدون تغییر
+                        event_name = 'commission_cover'
+                        locked_R = None
                 else:
-                    new_sl = entry - lock_R * risk
-                    new_tp = entry - extended_tp_R * risk
-                new_sl = _round(new_sl)
-                new_tp = _round(new_tp)
-                # فقط اگر بهتر از قبلی بود
-                if (direction == 'buy' and new_sl > pos.sl) or (direction == 'sell' and new_sl < pos.sl):
-                    res = mt5_conn.modify_sl_tp(pos.ticket, new_sl=new_sl, new_tp=new_tp)
-                    if res and getattr(res, 'retcode', None) == 10009:
-                        log(f'📈 Trail+Extend applied ticket={pos.ticket} SL->{new_sl} TP->{new_tp}', color='cyan')
-                        st['stage'] = 2
-                        st['trail_time'] = datetime.utcnow()
-                        try:
-                            log_position_event(
-                                symbol=MT5_CONFIG['symbol'],
-                                ticket=pos.ticket,
-                                event='trail_extend',
-                                direction=direction,
-                                entry=entry,
-                                current_price=cur_price,
-                                sl=new_sl,
-                                tp=new_tp,
-                                profit_R=profit_R,
-                                stage=2,
-                                risk_abs=st['risk'],
-                                locked_R=lock_R,
-                                volume=pos.volume,
-                                note='trail_trigger_R reached'
-                            )
-                        except Exception:
-                            pass
-                        modified = True
+                    # R-based stage
+                    trigger_R = stage_cfg.get('trigger_R')
+                    if trigger_R is not None and profit_R >= trigger_R:
+                        sl_lock_R = stage_cfg.get('sl_lock_R', trigger_R)
+                        tp_R = stage_cfg.get('tp_R')
+                        # SL placement
+                        if direction == 'buy':
+                            new_sl = entry + sl_lock_R * risk
+                            if tp_R:
+                                new_tp = entry + tp_R * risk
+                        else:
+                            new_sl = entry - sl_lock_R * risk
+                            if tp_R:
+                                new_tp = entry - tp_R * risk
+                        event_name = sid
+                        locked_R = sl_lock_R
 
-            # پاکسازی در صورت بسته شدن (handled بیرون)
-            if modified:
+                if new_sl is not None:
+                    # Round
+                    new_sl_r = _round(new_sl)
+                    new_tp_r = _round(new_tp) if new_tp is not None else pos.tp
+                    # Apply only if improves
+                    apply = False
+                    if direction == 'buy' and new_sl_r > pos.sl:
+                        apply = True
+                    if direction == 'sell' and new_sl_r < pos.sl:
+                        apply = True
+                    if apply:
+                        res = mt5_conn.modify_sl_tp(pos.ticket, new_sl=new_sl_r, new_tp=new_tp_r)
+                        if res and getattr(res, 'retcode', None) == 10009:
+                            st['done_stages'].add(sid)
+                            modified_any = True
+                            log(f'⚙️ Stage {sid} applied ticket={pos.ticket} SL->{new_sl_r} TP->{new_tp_r}', color='cyan')
+                            try:
+                                log_position_event(
+                                    symbol=MT5_CONFIG['symbol'],
+                                    ticket=pos.ticket,
+                                    event=event_name or sid,
+                                    direction=direction,
+                                    entry=entry,
+                                    current_price=cur_price,
+                                    sl=new_sl_r,
+                                    tp=new_tp_r,
+                                    profit_R=profit_R,
+                                    stage=None,
+                                    risk_abs=risk,
+                                    locked_R=locked_R,
+                                    volume=pos.volume,
+                                    note=f'stage {sid} trigger'
+                                )
+                            except Exception:
+                                pass
+            if modified_any:
                 position_states[pos.ticket] = st
 
     while True:
