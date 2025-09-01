@@ -171,33 +171,45 @@ class MT5Connector:
 
     # ---------- Stop validation ----------
     def calculate_valid_stops(self, entry_price, sl_price, tp_price, order_type):
+        """
+        Validate stops:
+        - حداقل فاصله استاپ از نقطه ورود: دقیقا >= 1 pip (اگر کمتر باشد سفارش رد می‌شود)
+        - 1 pip = 10 * point برای نمادهای 5 یا 3 رقمی، در غیر این صورت = point
+        - هیچ تغییری روی SL/TP اعمال نمی‌شود؛ فقط در صورت نامعتبر بودن None برمی‌گرداند.
+        """
         info = mt5.symbol_info(self.symbol)
         if not info:
+            print("Symbol info unavailable")
             return None, None
         point = info.point
-        min_dist = max(info.trade_stops_level * point, 3 * point)
+        pip_size = 10 * point if info.digits in (3, 5) else point
+
+        # اعتبار جهت SL
+        if order_type == mt5.ORDER_TYPE_BUY and sl_price >= entry_price:
+            print("❌ SL برای BUY باید پایین‌تر از ورود باشد")
+            return None, None
+        if order_type == mt5.ORDER_TYPE_SELL and sl_price <= entry_price:
+            print("❌ SL برای SELL باید بالاتر از ورود باشد")
+            return None, None
+
+        distance = abs(entry_price - sl_price)
+        if distance + 1e-12 <= pip_size:
+            print(f"❌ فاصله SL ({distance:.{info.digits}f}) < 1 pip ({pip_size}) — سفارش ارسال نمی‌شود")
+            return None, None
+
+        # اعتبار ساده جهت TP (اختیاری: فقط اگر خلاف جهت باشد رد می‌کنیم)
+        if tp_price is not None:
+            if order_type == mt5.ORDER_TYPE_BUY and tp_price <= entry_price:
+                print("❌ TP برای BUY باید بالاتر از ورود باشد")
+                return None, None
+            if order_type == mt5.ORDER_TYPE_SELL and tp_price >= entry_price:
+                print("❌ TP برای SELL باید پایین‌تر از ورود باشد")
+                return None, None
+
         def norm(p):
-            digits = info.digits
-            return float(f"{p:.{digits}f}")
-        adjusted = False
-        if order_type == mt5.ORDER_TYPE_BUY:
-            # SL must be below entry, TP above
-            if sl_price >= entry_price - min_dist:
-                sl_price = entry_price - min_dist
-                adjusted = True
-            if tp_price <= entry_price + min_dist:
-                tp_price = entry_price + min_dist
-                adjusted = True
-        elif order_type == mt5.ORDER_TYPE_SELL:
-            if sl_price <= entry_price + min_dist:
-                sl_price = entry_price + min_dist
-                adjusted = True
-            if tp_price >= entry_price - min_dist:
-                tp_price = entry_price - min_dist
-                adjusted = True
-        sl_price = norm(sl_price)
-        tp_price = norm(tp_price)
-        return sl_price, tp_price
+            return float(f"{p:.{info.digits}f}")
+
+        return norm(sl_price), norm(tp_price)
 
     # ---------- Order sending core ----------
     def try_all_filling_modes(self, request):
