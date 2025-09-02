@@ -50,7 +50,7 @@ MT5_CONFIG = {
     'magic_number': 234000,
     'deviation': 20,
     'max_spread': 3.0,
-    'min_balance': 100,
+    'min_balance': 1,
     'max_daily_trades': 10,
     'trading_hours': FULL_TIME_IRAN,
 }
